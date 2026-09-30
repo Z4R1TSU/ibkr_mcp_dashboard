@@ -1,0 +1,5 @@
+{$DASHBOARD_HOSTNAME} {
+    reverse_proxy app:8048 {
+        flush_interval -1
+    }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "ibkr-mcp-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "npm run build && tsx watch server/index.ts",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "start": "node dist/server/index.js",
+    "service:install": "node scripts/install-service.mjs",
+    "test": "tsx --test tests/*.test.ts",
+    "import-codex": "tsx scripts/import-codex.ts",
+    "show-login": "node scripts/show-login.mjs",
+    "research:setup": "node scripts/setup-research.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.1",
+    "@xhayper/discord-rpc": "1.5.1",
+    "dotenv": "17.2.3",
+    "express": "5.2.1",
+    "lucide-react": "1.48.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "8.3.1"
+  }
+}

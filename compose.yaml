@@ -1,0 +1,54 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      ACCESS_MODE: password
+      HOST: 0.0.0.0
+      PORT: 8048
+      PUBLIC_URL: https://${DASHBOARD_HOSTNAME:?Set DASHBOARD_HOSTNAME}
+      DATA_DIR: /app/data
+      POLL_SECONDS: ${POLL_SECONDS:-60}
+      QUOTE_BATCH_SIZE: ${QUOTE_BATCH_SIZE:-4}
+      STALE_SECONDS: ${STALE_SECONDS:-180}
+      SESSION_HOURS: 8
+    volumes:
+      - portfolio-data:/app/data
+    networks:
+      - private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8048/api/health').then(response=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DASHBOARD_HOSTNAME: ${DASHBOARD_HOSTNAME:?Set DASHBOARD_HOSTNAME}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - private
+    depends_on:
+      app:
+        condition: service_healthy
+volumes:
+  portfolio-data:
+  caddy-data:
+  caddy-config:
+networks:
+  private:
