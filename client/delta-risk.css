@@ -1,0 +1,15 @@
+.delta-panel { margin-bottom: 20px; }
+.delta-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.delta-metrics > div > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.delta-metrics strong { font-size: 22px; }
+.delta-panel details { margin-top: 18px; }
+.delta-panel summary { cursor: pointer; padding: 8px 0; }
+.delta-source small { display: block; font-size: 10px; color: var(--muted); }
+@media (max-width: 900px) { .delta-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.delta-panel { padding: 24px; }
+.delta-panel > .muted, .delta-panel > .micro-note { margin: 12px 0; }
+.nav-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.nav-metrics b > span { color: inherit; font-size: inherit; }
+@media (max-width: 600px) { .nav-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .delta-panel { padding: 18px; } }
+
+.delta-reference { border-left: 3px solid var(--amber); padding: 10px 14px; margin: 14px 0; background: #24251d; color: var(--amber); font-size: 12px; }

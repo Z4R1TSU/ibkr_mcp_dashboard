@@ -1,0 +1,5 @@
+# Reuses the existing .venv-tradingagents environment; no new data subscription.
+websockets==16.1.1
+jsonpatch==1.33
+python-dotenv==1.2.3
+requests==2.34.2

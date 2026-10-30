@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>连接 thinkorswim 行情</title>
+<style>
+body{margin:28px auto;max-width:1280px;padding:0 20px;font:16px/1.7 system-ui;color:#182838;background:#f5f7fa}
+h1{font-size:26px}button,a{margin-right:14px}button{padding:10px 18px;cursor:pointer}
+canvas{display:block;width:100%;height:auto;background:white;border:1px solid #ccd6df;margin-top:16px;outline-color:#1570c6}
+form{max-width:420px;display:grid;gap:14px;padding:24px;background:white;border-radius:12px}
+input:not([type=checkbox]){display:block;width:100%;box-sizing:border-box;padding:12px;font:inherit;border:1px solid #b8c5d2;border-radius:6px}
+label{display:block}details{margin-top:24px}#factor,#otp{margin-top:16px}
+#state{padding:12px;background:#e8eef5;border-radius:8px}
+[hidden]{display:none!important}
+</style>
+<h1>连接 thinkorswim 行情</h1>
+<p>连接嘉信后，看板仅查询行情。登录在嘉信官网页面完成，成功后自动关闭登录窗口。登录信息通过 HTTPS 交给服务器浏览器，在嘉信官方页面完成验证，不写入日志或发送给模型。</p>
+<p>在下方一次填写账号和密码，看板会自动完成嘉信的分步登录。遇到特殊验证时再打开原生页面。</p>
+<form id="credentials" autocomplete="on">
+<label>嘉信登录 ID<input id="username" autocomplete="username" required maxlength="128"></label>
+<label>密码<input id="password" type="password" autocomplete="current-password" required maxlength="512"></label>
+<label><input id="trust" type="checkbox"> 在嘉信验证时信任这台服务器</label>
+<button id="submit" type="submit">登录并连接行情</button>
+</form>
+<p id="state">正在连接…</p>
+<div id="factor" hidden><button data-factor="mobile">发送手机批准通知</button><button data-factor="sms">发送短信验证码</button></div>
+<form id="otp" hidden><label>短信验证码<input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4,8}" required></label><button type="submit">验证</button></form>
+<p><button id="stop">取消登录</button><a href="/">返回持仓看板</a></p>
+<details id="fallback"><summary>遇到特殊验证？打开嘉信原生页面</summary>
+<p><button id="start">重新打开原生登录页</button>仅在必要时使用；点击画面可输入和操作。</p>
+<canvas id="screen" width="1280" height="900" tabindex="0" aria-label="服务器上的嘉信登录网页"></canvas>
+</details>
+<script src="/tos-login/app.js"></script>
+</html>
