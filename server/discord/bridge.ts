@@ -13,6 +13,7 @@ export class DiscordBridge {
   private applicationId = '';
   private sent: string | undefined;
   private pending?: Promise<void>;
+  private resync = false;
   private timer?: NodeJS.Timeout;
   private stopped = true;
   lastSentAt: string | null = null;
@@ -36,20 +37,23 @@ export class DiscordBridge {
     if (connection) await bounded(connection.close(), 2000).catch(() => undefined);
   }
   async reset() {
-    await this.disconnect();
     await this.pending;
+    await this.disconnect();
     this.error = null;
     if (!this.stopped) void this.sync();
   }
   async stop() {
     this.stopped = true;
     clearInterval(this.timer);
-    await this.disconnect();
     await this.pending;
+    await this.disconnect();
   }
   sync(): Promise<void> {
+    this.resync = true;
     if (this.pending) return this.pending;
-    this.pending = this.run().catch(async error => {
+    this.pending = (async () => {
+      do { this.resync = false; await this.run(); } while (this.resync);
+    })().catch(async error => {
       this.error = 'Discord 同步失败，请确认 Application ID 和桌面端已登录；将自动重试'
         + (typeof error?.code === 'number' ? '（' + error.code + '）' : '');
       await this.disconnect();
@@ -59,6 +63,7 @@ export class DiscordBridge {
   private async run() {
     const settings = this.settings();
     if (this.stopped || !settings.enabled) { await this.disconnect(); return; }
+    if (!this.activity()) { await this.disconnect(); this.error = null; return; }
     if (!this.connection?.connected || settings.applicationId !== this.applicationId) {
       await this.disconnect();
       this.applicationId = settings.applicationId;
@@ -69,8 +74,10 @@ export class DiscordBridge {
     const connection = this.connection;
     if (this.stopped || !current.enabled || current.applicationId !== settings.applicationId || !connection?.connected) return;
     const activity = this.activity();
+    if (!activity) { await this.disconnect(); return; }
     const fingerprint = JSON.stringify(activity);
-    if (fingerprint === this.sent) return;
+    // Reassert even unchanged content: a live IPC socket does not prove Discord
+    // retained the activity through desktop/network suspension.
     if (activity && this.sent && this.sent !== 'null' && this.lastSentAt
       && this.now() - Date.parse(this.lastSentAt) < 60000) return;
     await bounded(connection.send(activity));

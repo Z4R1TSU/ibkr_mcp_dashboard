@@ -20,6 +20,27 @@ function history() {
   } } } };
 }
 
+test('a later fetch of September performance cannot replace an October return', async () => {
+  const now = new Date('2026-10-13T03:00:00Z');
+  const state = { snapshot: { fetchedAt: now.toISOString(), account: { nav: 1100, currency: 'USD' } },
+    status: { connected: true, stale: false } } as DashboardState;
+  const raw = history();
+  raw.accounts.only.periods.YTD.dates = ['20260930', '20261012'];
+  raw.accounts.only.periods.YTD.cps = [-0.003, 0.1];
+  raw.accounts.only.periods.YTD.nav = [997, 1100];
+  let response = raw;
+  const source = new PresenceData(() => state, async () => response, async () => '2026-10-12');
+  await source.refresh(now);
+  const expected = source.summary('2026-03-31', now).performance;
+  response = structuredClone(raw);
+  response.accounts.only.periods.YTD.dates.pop();
+  response.accounts.only.periods.YTD.cps.pop();
+  response.accounts.only.periods.YTD.nav.pop();
+  await source.refresh(now);
+  assert.deepEqual(source.summary('2026-03-31', now).performance, expected);
+  assert.match(source.summary('2026-03-31', now).warnings.join(' '), /保留较新的 2026-10-12/);
+});
+
 test('artwork follows the daily return and treats zero or missing data as neutral', () => {
   assert.equal(presenceArtwork(1.25).largeImageKey, 'portfolio_up');
   assert.equal(presenceArtwork(-1.25).smallImageKey, 'trend_down');
@@ -69,21 +90,23 @@ test('IB first daily point includes return from the preceding valuation day', ()
   assert.ok(Math.abs(result.value.dailyReturnPct! + 10) < 1e-8);
 });
 
-test('stale accounts retain dated grey snapshots and currency mismatches hide returns', async () => {
+test('stale account values stay labeled and unarchived returns do not become yesterday snapshots', async () => {
   const state = { snapshot: { fetchedAt: new Date().toISOString(), account: { nav: 2178, currency: 'USD' } },
     status: { connected: true, stale: false } } as DashboardState;
   const source = new PresenceData(() => state, async () => history(), async () => '2026-09-28');
   await source.refresh();
-  assert.match(source.summary('2026-03-31').activity!.state, /累计 \+8.90%/);
-  assert.equal(source.summary('2026-03-31').activity!.largeImageKey, 'portfolio_down');
-  assert.equal(source.summary('2026-03-31').activity!.smallImageKey, 'trend_down');
-  state.status.stale = true;
+  assert.match(source.summary('2026-03-31').activity!.details, /总 \+8.90%/);
   assert.equal(source.summary('2026-03-31').activity!.largeImageKey, 'portfolio_flat');
-  assert.match(source.summary('2026-03-31').activity!.name!, /账户快照/);
-  assert.match(source.summary('2026-03-31').activity!.details, /2,178.00/);
+  assert.equal(source.summary('2026-03-31').activity!.smallImageKey, 'trend_flat');
+  state.status.stale = true;
+  assert.match(source.summary('2026-03-31').activity!.details, /^旧值/);
+  assert.equal(source.summary('2026-03-31').yesterday, null);
+  assert.equal(source.summary('2026-03-31').performance!.date, '2026-09-28');
+  assert.equal(source.summary('2026-03-31').nav, 2178);
   state.status.stale = false;
   state.snapshot!.account.currency = 'HKD';
   assert.equal(source.summary('2026-03-31').performance, null);
+  assert.equal(source.summary('2026-03-31').activity!.largeImageKey, 'portfolio_flat');
   assert.match(source.summary('2026-03-31').activity!.details, /HKD/);
 });
 
@@ -100,16 +123,16 @@ test('Discord settings survive restart and invalid edits do not replace them', (
   } finally { fs.rmSync(dir, { recursive: true }); }
 });
 
-test('an offline account without a snapshot still gets a neutral waiting activity', () => {
+test('an offline account without a snapshot publishes an explicit waiting activity', () => {
   const source = new PresenceData(() => ({ snapshot: null, status: { connected: false, stale: true } }) as DashboardState,
     async () => { throw new Error('offline'); }, async () => '2026-09-29');
   const value = source.summary('2026-03-31');
   assert.equal(value.activity!.largeImageKey, 'portfolio_flat');
   assert.match(value.activity!.name!, /等待数据/);
-  assert.match(value.activity!.details, /账户 —/);
+  assert.match(value.activity!.details, /净值 —/);
 });
 
-test('a failed performance refresh preserves the last dated return in grey', async () => {
+test('a failed performance refresh preserves the last dated return calculations', async () => {
   let failed = false;
   const state = { snapshot: { fetchedAt: new Date().toISOString(), account: { nav: 2178, currency: 'USD' } }, status: { connected: true, stale: false } } as DashboardState;
   const source = new PresenceData(() => state, async () => {
@@ -120,8 +143,9 @@ test('a failed performance refresh preserves the last dated return in grey', asy
   await source.refresh();
   const value = source.summary('2026-03-31');
   assert.equal(value.performance!.date, '2026-09-28');
-  assert.match(value.activity!.state, /累计 \+8.90%/);
+  assert.match(value.activity!.details, /总 \+8.90%/);
   assert.equal(value.activity!.largeImageKey, 'portfolio_flat');
+  assert.match(value.warnings.join(' '), /收益更新失败/);
 });
 
 test('bridge reconnects, coalesces updates, clears stale data and stops', async () => {
@@ -162,6 +186,31 @@ test('bridge reconnects, coalesces updates, clears stale data and stops', async 
   } finally { await bridge.stop(); }
 });
 
+test('mutable gains stay available for analysis without substituting an unarchived yesterday', async () => {
+  for (const reason of ['calendar', 'offline', 'lag', 'stale', 'disconnected']) {
+    const raw = Object.assign(history(), {
+      local_archive: { latestDate: '2026-09-28', providerLatest: '2026-09-25', offline: reason === 'offline', records: 4 },
+    });
+    raw.accounts.only.periods.YTD.cps[3] = 1.331 * 1.1 - 1;
+    raw.accounts.only.periods.YTD.nav[3] = 2662;
+    const state = { snapshot: { fetchedAt: new Date().toISOString(), account: { nav: 2662, currency: 'USD' } },
+      status: { connected: reason !== 'disconnected', stale: reason === 'stale' } } as DashboardState;
+    const source = new PresenceData(() => state, async () => raw, async () => {
+      if (reason === 'calendar') throw new Error('calendar unavailable');
+      return reason === 'lag' ? '2026-09-29' : '2026-09-28';
+    });
+    await source.refresh();
+    const value = source.summary('2025-03-31');
+    assert.ok(value.warnings.length, reason);
+    assert.equal(value.performance!.totalReturnPct, null, reason);
+    assert.ok(Math.abs(value.performance!.dailyReturnPct! - 10) < 1e-8, reason);
+    assert.equal(value.activity!.largeImageKey, 'portfolio_flat', reason);
+    assert.equal(value.activity!.smallImageKey, 'trend_flat', reason);
+    assert.equal(value.yesterday, null, reason);
+    assert.match(value.activity!.state, /—$/, reason);
+  }
+});
+
 test('bridge catches rejected RPC writes and bounded calls cannot hang', async () => {
   const connection = { connected: true, connect: async () => undefined,
     send: async () => { throw new Error('write failed'); }, close: async () => { connection.connected = false; } };
@@ -171,4 +220,40 @@ test('bridge catches rejected RPC writes and bounded calls cannot hang', async (
   try { await bridge.sync(); assert.equal(bridge.connected, false); assert.match(bridge.error!, /同步失败/); }
   finally { await bridge.stop(); }
   await assert.rejects(bounded(new Promise(() => undefined), 5), /超时/);
+});
+
+test('capital totals work without cumulative TWR and keep the daily return separate', async () => {
+  const state = { snapshot: { fetchedAt: new Date().toISOString(), account: { nav: 1500, currency: 'USD' } },
+    status: { connected: true, stale: false } } as DashboardState;
+  const source = new PresenceData(() => state, async () => history(), async () => '2026-09-28');
+  await source.refresh();
+  const value = source.summary('2025-03-31', undefined, 1000);
+  assert.equal(value.total!.pnlUsd, 500);
+  assert.equal(value.total!.returnPct, 50);
+  assert.ok(value.activity!.details.endsWith('总 +50.00%'));
+  assert.ok(Math.abs(value.performance!.dailyReturnPct! + 10) < 1e-8);
+  assert.equal(value.activity!.largeImageKey, 'portfolio_flat');
+  assert.equal(value.performance!.totalReturnPct, null);
+  assert.ok(!value.warnings.some(warning => warning.includes('累计收益暂缺')));
+  const withoutCost = source.summary('2025-03-31');
+  assert.ok(withoutCost.warnings.some(warning => warning.includes('累计收益暂缺')));
+});
+
+test('capital totals survive unavailable performance and do not silently switch to TWR', async () => {
+  const state = { snapshot: { fetchedAt: new Date().toISOString(), account: { nav: 600, currency: 'USD' } },
+    status: { connected: true, stale: false } } as DashboardState;
+  const source = new PresenceData(() => state, async () => { throw new Error('offline'); }, async () => '2026-09-28');
+  await source.refresh();
+  assert.equal(source.summary('2026-03-31', undefined, 1000).total!.returnPct, -40);
+  state.snapshot!.account.nav = 1000;
+  assert.ok(source.summary('2026-03-31', undefined, 1000).activity!.details.endsWith('总 +0.00%'));
+  state.snapshot!.account.currency = 'HKD';
+  const raw = history();
+  raw.accounts.only.base_currency = 'HKD';
+  const foreign = new PresenceData(() => state, async () => raw, async () => '2026-09-28');
+  await foreign.refresh();
+  const value = foreign.summary('2026-03-31', undefined, 1000);
+  assert.equal(value.total, null);
+  assert.ok(value.activity!.details.endsWith('总 —'));
+  assert.ok(value.warnings.some(warning => warning.includes('美元账户净值')));
 });

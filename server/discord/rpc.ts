@@ -12,7 +12,10 @@ export function createPresenceConnection(applicationId: string): PresenceConnect
   const client = new Client({ clientId: applicationId, transport: { type: 'ipc' } });
   return {
     get connected() { return client.isConnected; },
-    connect: () => client.login(),
+    connect: async () => {
+      await client.login();
+      if (!client.user) throw new Error('Discord 桌面端尚未登录');
+    },
     send: async activity => {
       if (!client.user) throw new Error('Discord 尚未就绪');
       if (activity) await client.user.setActivity({ name: '我的投资账户', ...activity, type: 3, statusDisplayType: 2 });

@@ -1,11 +1,27 @@
-import { dailyPerformance } from '../daily-performance.js';
+import { completedDay, dailyPerformance } from '../daily-performance.js';
 import type { PresenceSummary } from '../../shared/discord.js';
 import { validDate } from './settings.js';
 
 const iso = (value: unknown): string => typeof value === 'string' && /^\d{8}$/.test(value)
   ? value.slice(0, 4) + '-' + value.slice(4, 6) + '-' + value.slice(6) : String(value);
 
-export function presencePerformance(input: unknown, date: string, startDate: string) {
+export function latestPerformanceTradingDate(input: unknown, marketDate: string | null, now = new Date()): string | null {
+  const data = input as any;
+  const ceiling = marketDate && completedDay(marketDate, now) ? marketDate : null;
+  const dates = new Set<string>();
+  for (const account of Object.values(data?.accounts ?? {}) as any[]) {
+    for (const period of Object.values(account.periods ?? {}) as any[]) {
+      if (period.frequency !== 'D' || !Array.isArray(period.dates)) continue;
+      for (const value of period.dates) {
+        const date = iso(value);
+        if (completedDay(date, now) && (!ceiling || date <= ceiling)) dates.add(date);
+      }
+    }
+  }
+  return [...dates].sort().at(-1) ?? ceiling;
+}
+
+export function presencePerformance(input: unknown, date: string, startDate: string, includeTotal = true) {
   const warnings: string[] = [];
   const value: NonNullable<PresenceSummary['performance']> = { date, since: null, totalReturnPct: null, dailyReturnPct: null };
   const data = input as any;
@@ -16,6 +32,7 @@ export function presencePerformance(input: unknown, date: string, startDate: str
   const currency = typeof accounts[0].base_currency === 'string' ? accounts[0].base_currency : null;
   try { value.dailyReturnPct = dailyPerformance(data, date).returnPct; }
   catch { warnings.push(date + ' 的日收益尚未返回'); }
+  if (!includeTotal) return { value, currency, warnings };
   const periods = Object.values(accounts[0].periods ?? {}) as any[];
   if (!validDate(startDate)) return { value, currency, warnings };
   // Cumulative return must cover the requested starting date; never substitute YTD.
