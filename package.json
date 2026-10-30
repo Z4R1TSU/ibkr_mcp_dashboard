@@ -12,19 +12,30 @@
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "start": "node dist/server/index.js",
     "service:install": "node scripts/install-service.mjs",
+    "feishu:commands": "node scripts/sync-feishu-slash.mjs",
     "test": "tsx --test tests/*.test.ts",
     "import-codex": "tsx scripts/import-codex.ts",
     "show-login": "node scripts/show-login.mjs",
-    "research:setup": "node scripts/setup-research.mjs"
+    "research:setup": "node scripts/setup-research.mjs",
+    "research:check": "tsx scripts/check-research-data.ts",
+    "research:test": ".venv-tradingagents/bin/python -I tests/research_data_test.py && .venv-tradingagents/bin/python -I tests/research_sources_test.py && .venv-tradingagents/bin/python -I tests/price_validation_test.py",
+    "research:sources": "tsx scripts/check-research-sources.ts",
+    "tos:test": ".venv-tradingagents/bin/python -I tests/thinkorswim_test.py",
+    "tos:ui-test": "node tests/tos-login-ui.mjs",
+    "tos:research-test": ".venv-tradingagents/bin/python -I tests/tos_research_test.py",
+    "tos:install": "node scripts/install-thinkorswim.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.1",
     "@xhayper/discord-rpc": "1.5.1",
     "dotenv": "17.2.3",
     "express": "5.2.1",
+    "js-tiktoken": "1.0.21",
     "lucide-react": "1.48.0",
+    "playwright-core": "1.64.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "undici": "6.29.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

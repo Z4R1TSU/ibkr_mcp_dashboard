@@ -4,7 +4,11 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-if (process.platform !== 'darwin') throw new Error('此脚本仅用于 macOS 登录启动');
+if (process.platform === 'linux') {
+  await import('./install-service-linux.mjs');
+  process.exit(0);
+}
+if (process.platform !== 'darwin') throw new Error('服务安装支持 Linux systemd 和 macOS launchd');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
 const { config } = await import('../dist/server/config.js');
