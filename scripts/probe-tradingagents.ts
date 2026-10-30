@@ -18,10 +18,14 @@ try {
   const result = await runner.run({ ticker, date: researchDate(), account: null, directory }, controller.signal,
     (stage, calls) => console.log(JSON.stringify({ stage, calls })));
   const conclusion = result.summary.split('## 综合研究结论\n\n').at(-1) ?? '';
-  const valid = result.analysts.join(',') === 'market,social,news,fundamentals' && (conclusion.match(/[\u4e00-\u9fff]/g)?.length ?? 0) > 10
+  const critical = new Set(['quote', 'market', 'financials', 'disclosures', 'price_validation', 'financial_validation']);
+  const missingCritical = (result.quality?.missing ?? []).filter(name => critical.has(name));
+  const valid = !missingCritical.length && !['Not rated', 'REVIEW'].includes(result.rating)
+    && result.analysts.join(',') === 'market,social,news,fundamentals' && (conclusion.match(/[\u4e00-\u9fff]/g)?.length ?? 0) > 10
     && result.report.includes('技术面研究') && result.report.includes('基本面研究') && result.report.includes('市场情绪研究');
   fs.writeFileSync(path.join(directory, 'smoke-result.json'), JSON.stringify({ ...result, valid }), { mode: 0o600 });
-  console.log(JSON.stringify({ valid, model: result.model, revision: result.revision, report: path.join(directory, 'report.md'), reportLength: result.report.length }));
+  console.log(JSON.stringify({ valid, allSourcesAvailable: result.quality?.status === 'complete', missingCritical,
+    quality: result.quality, model: result.model, revision: result.revision, report: path.join(directory, 'report.md'), reportLength: result.report.length }));
   if (!valid) process.exitCode = 1;
 } catch (error) {
   console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Research failed', directory }));

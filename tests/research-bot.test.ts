@@ -32,10 +32,10 @@ function fixture() {
     return completion.promise;
   } };
   const jobs = new ResearchJobs(directory, runner);
-  let normalCalls = 0;
+  let normalCalls = 0, refreshes = 0;
   const model = { name: 'same-model', configured: true, answer: async () => { normalCalls++; return '普通问答'; } };
-  const bot = new PortfolioBot(config, store, { view: () => state, refresh: async () => {} }, transport, model, undefined, jobs);
-  return { bot, store, jobs, sent, inputs, completion, notified, transport, normalCalls: () => normalCalls,
+  const bot = new PortfolioBot(config, store, { view: () => state, refresh: async () => { refreshes++; } }, transport, model, undefined, jobs);
+  return { bot, store, jobs, sent, inputs, completion, notified, transport, normalCalls: () => normalCalls, refreshes: () => refreshes,
     clean: async () => { completion.resolve(result); await bot.stop(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
 
@@ -69,6 +69,12 @@ test('explicit research runs in the background, deduplicates messages and leaves
     assert.equal(context.inputs.length, 1);
     assert.equal(context.normalCalls(), 0);
     assert.match(context.sent[0].text, /same-model/);
+    // Positions are read when the job starts, not from the cache at command time.
+    assert.equal(context.refreshes(), 0);
+    const account = context.inputs[0].account as () => Promise<{ fetchedAt?: string } | null>;
+    assert.equal(typeof account, 'function');
+    assert.ok((await account())?.fetchedAt);
+    assert.equal(context.refreshes(), 1);
     await context.bot.receive(event);
     assert.equal(context.inputs.length, 1);
     await context.bot.receive(message('摘要'));

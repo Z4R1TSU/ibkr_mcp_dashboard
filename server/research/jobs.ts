@@ -3,16 +3,20 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ResearchInput, ResearchResult, ResearchRunner } from './runner.js';
 
-type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+type JobStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
 interface Job {
   id: string; ticker: string; date: string; requester: string; status: JobStatus;
   stage: string; calls: number; startedAt: string; finishedAt: string | null; error: string | null; notification: string | null;
+  rating?: string;
 }
 interface ActiveJob { scope: string; record: Job; controller: AbortController; pending?: Promise<void> }
+export function hasResearchRating(rating: string | undefined): boolean {
+  return ['strong buy', 'buy', 'hold', 'sell', 'strong sell'].includes(rating?.toLowerCase() ?? '');
+}
 
 export const RESEARCH_HELP = [
   'TradingAgents · 只读研究',
-  '/research AAPL：研究指定股票；四类分析师、多空讨论与风险讨论均复用持仓助手当前模型',
+  '/research AAPL：核验数据后研究指定股票；模型讨论复用持仓助手当前模型，资料不足时返回部分研究',
   '/research status：查看当前聊天的最近一次研究进度',
   '/research report：获取当前聊天最近完成的完整报告',
   '/research cancel：停止当前研究（发起人或账户管理员）',
@@ -51,6 +55,10 @@ export class ResearchJobs {
     if (!fs.existsSync(file)) return null;
     const record = JSON.parse(fs.readFileSync(file, 'utf8')) as Job;
     if (!/^[a-f0-9-]{36}$/.test(record.id)) throw new Error('Invalid saved research task');
+    if (['completed', 'partial'].includes(record.status) && !record.rating) {
+      const resultFile = path.join(this.scopeDir(scope), record.id, 'result.json');
+      if (fs.existsSync(resultFile)) record.rating = (JSON.parse(fs.readFileSync(resultFile, 'utf8')) as ResearchResult).rating;
+    }
     if (record.status === 'running' || record.status === 'queued') {
       record.status = 'interrupted'; record.error = '服务重启中断了研究；不会自动重跑或额外调用模型。';
       record.finishedAt = new Date().toISOString(); this.save(scope, record);
@@ -60,16 +68,21 @@ export class ResearchJobs {
   describe(scope: string): string {
     const job = this.read(scope);
     if (!job) return '当前聊天尚无研究任务。发送 /research AAPL 开始只读研究。';
-    const labels: Record<JobStatus, string> = { queued: '等待启动', running: '研究中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' };
-    return [job.ticker + ' · ' + labels[job.status], '任务：' + job.id.slice(0, 8), '开始：' + job.startedAt,
+    const labels: Record<JobStatus, string> = { queued: '等待启动', running: '研究中', completed: '已完成', partial: '资料不足（部分研究）', failed: '失败', cancelled: '已取消', interrupted: '已中断' };
+    const terminal = ['completed', 'partial'].includes(job.status);
+    const label = terminal ? hasResearchRating(job.rating)
+      ? job.status === 'partial' ? '已完成（部分数据缺失）' : '已完成'
+      : job.rating === 'REVIEW' ? '评级待复核' : '暂不评级' : labels[job.status];
+    return [job.ticker + ' · ' + label, terminal && hasResearchRating(job.rating) ? '研究评级：' + job.rating : '',
+      '任务：' + job.id.slice(0, 8), '开始：' + job.startedAt,
       '阶段：' + job.stage, '模型调用：' + job.calls, job.error, job.notification,
-      job.status === 'completed' ? '发送 /research report 获取完整报告。' : '', '仅研究，未下单。'].filter(Boolean).join('\n');
+      ['completed', 'partial'].includes(job.status) ? '发送 /research report 获取报告及数据覆盖情况。' : '', '仅研究，未下单。'].filter(Boolean).join('\n');
   }
   report(scope: string): string {
     const job = this.read(scope);
-    if (!job || job.status !== 'completed') return this.describe(scope);
+    if (!job || !['completed', 'partial'].includes(job.status)) return this.describe(scope);
     const result = JSON.parse(fs.readFileSync(path.join(this.scopeDir(scope), job.id, 'result.json'), 'utf8')) as ResearchResult;
-    return result.report;
+    return result.messageReport ?? result.report;
   }
   cancel(scope: string, sender: string, owner: string): string {
     const active = this.active;
@@ -117,8 +130,12 @@ export class ResearchJobs {
       if (controller.signal.aborted) throw new Error('研究已取消。');
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result), { mode: 0o600 });
-      record.status = 'completed'; record.stage = '报告已保存';
-      summary = result.summary + '\n\n发送 /research report 获取全部分析章节。';
+      record.status = result.quality?.status === 'partial' ? 'partial' : 'completed';
+      record.rating = result.rating;
+      record.stage = hasResearchRating(result.rating)
+        ? record.status === 'partial' ? '评级与报告已保存，部分数据存在缺口' : '评级与报告已保存'
+        : '未形成评级，已保存资料与具体原因';
+      summary = result.summary + '\n\n发送 /research report 获取报告及数据覆盖情况。';
     } catch (error) {
       record.status = controller.signal.aborted ? 'cancelled' : 'failed';
       record.error = error instanceof Error ? error.message : '研究失败，未生成完整报告。';

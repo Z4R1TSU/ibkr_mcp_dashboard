@@ -1,2 +1,3 @@
 -c constraints.txt
 tradingagents @ https://codeload.github.com/TauricResearch/TradingAgents/tar.gz/8b22d43d01d9ddda5d686d093d5385884622f3de#sha256=cd50792b6a41ff0830cd9149a9a8fd2e27100799257dd7d2147534574db39299
+pysqlite3-binary==0.5.4.post2; sys_platform == "linux" and platform_machine == "x86_64"
