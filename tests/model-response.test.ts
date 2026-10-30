@@ -32,3 +32,36 @@ test('an empty model response returns verified FX facts instead of the old compa
   assert.doesNotMatch(answer, /PRIVATE_REASONING|检查接口兼容性/);
   assert.equal(model.diagnostics?.finishReason, 'length');
 });
+
+test('transient connection failure retries with the full conversation and redacted diagnostics', async () => {
+  const config = readModelConfig({ MODEL_BASE_URL: 'https://model.example/v1', MODEL_NAME: 'test', MODEL_API_KEY: 'DO_NOT_LOG_KEY' });
+  let calls = 0;
+  const bodies: string[] = [];
+  const fetcher: typeof fetch = async (_url, init) => {
+    calls++;
+    bodies.push(String(init?.body));
+    if (calls === 1) throw Object.assign(new TypeError('DO_NOT_LOG_KEY'), { cause: { code: 'ECONNRESET' } });
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: 'recovered' } }], usage: { prompt_tokens: 123, completion_tokens: 10 } });
+  };
+  const model = new CompatibleModel(config, fetcher);
+  const state = { snapshot: null, status: { connected: true, stale: false } } as DashboardState;
+  const answer = await model.answer('follow-up', state, '', 'fictional facts', [{ role: 'user', content: 'previous question' }, { role: 'assistant', content: 'previous answer' }]);
+  assert.equal(answer, 'recovered');
+  assert.equal(calls, 2);
+  assert.equal(bodies[0], bodies[1]);
+  assert.match(bodies[1], /previous answer/);
+  assert.equal(model.diagnostics?.attempts, 2);
+  assert.equal(model.diagnostics?.promptTokens, 123);
+  assert.doesNotMatch(JSON.stringify(model.diagnostics), /DO_NOT_LOG_KEY/);
+});
+
+test('overall deadline is reported separately and is not retried', async () => {
+  let calls = 0;
+  const config = readModelConfig({ MODEL_BASE_URL: 'https://model.example/v1', MODEL_NAME: 'test', MODEL_API_KEY: 'secret', MODEL_TIMEOUT_SECONDS: '900' });
+  const model = new CompatibleModel(config, async () => { calls++; throw new DOMException('expired', 'TimeoutError'); });
+  const state = { snapshot: null, status: { connected: true, stale: false } } as DashboardState;
+  const answer = await model.answer('question', state, '', 'verified fact');
+  assert.match(answer, /900 秒/);
+  assert.equal(calls, 1);
+  assert.equal(model.diagnostics?.error, 'timeout');
+});

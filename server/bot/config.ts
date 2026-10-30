@@ -16,6 +16,7 @@ export interface ModelConfig {
   name: string;
   timeoutMs: number;
   maxTokens: number;
+  contextTokens: number;
 }
 
 export function readBotConfig(env: NodeJS.ProcessEnv, app: { publicUrl: string; dataDir: string }): BotConfig {
@@ -36,10 +37,12 @@ export function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
   const provider = env.MODEL_PROVIDER || 'chat-completions';
   if (provider !== 'chat-completions' && provider !== 'aidp') throw new Error('MODEL_PROVIDER must be chat-completions or aidp');
   const maxTokens = Number(env.MODEL_MAX_TOKENS || 32768);
+  const contextTokens = Number(env.MODEL_CONTEXT_TOKENS || 100000);
+  if (!Number.isSafeInteger(contextTokens) || contextTokens < 4096 || contextTokens > 1000000) throw new Error('MODEL_CONTEXT_TOKENS must be 4096–1000000');
   if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 32768) throw new Error('MODEL_MAX_TOKENS must be 1–32768');
   const timeoutMs = Number(env.MODEL_TIMEOUT_SECONDS || 300) * 1000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 900000) throw new Error('MODEL_TIMEOUT_SECONDS must be 1–900');
-  const value: ModelConfig = { provider, baseUrl: env.MODEL_BASE_URL?.trim() ?? '', apiKey: env.MODEL_API_KEY ?? '', name: env.MODEL_NAME?.trim() ?? '', timeoutMs, maxTokens };
+  const value: ModelConfig = { provider, baseUrl: env.MODEL_BASE_URL?.trim() ?? '', apiKey: env.MODEL_API_KEY ?? '', name: env.MODEL_NAME?.trim() ?? '', timeoutMs, maxTokens, contextTokens };
   if (value.baseUrl) {
     const url = new URL(value.baseUrl);
     if (url.username || url.password || url.search || url.hash) throw new Error('MODEL_BASE_URL must not contain credentials, query, or fragment');
@@ -47,4 +50,12 @@ export function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
     if (provider === 'aidp' && url.href !== 'https://aidp.bytedance.net/api/modelhub/online/v2/crawl') throw new Error('AIDP requires the official crawl endpoint without query parameters');
   }
   return value;
+}
+
+export function readMemoryConfig(env: NodeJS.ProcessEnv) {
+  const maxTurns = Number(env.MEMORY_MAX_TURNS || 20);
+  const maxChars = Number(env.MEMORY_MAX_CHARS || 200000);
+  if (!Number.isSafeInteger(maxTurns) || maxTurns < 1 || maxTurns > 1000) throw new Error('MEMORY_MAX_TURNS must be 1–1000');
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1000 || maxChars > 5000000) throw new Error('MEMORY_MAX_CHARS must be 1000–5000000');
+  return { maxTurns, maxChars };
 }

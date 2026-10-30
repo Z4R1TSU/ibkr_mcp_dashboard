@@ -1,6 +1,14 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { BrokerId } from '../../shared/broker-auth.js';
+
+export interface LoginAlertIncident {
+  id: string;
+  detectedAt: string;
+  sentAt: string | null;
+  resolvedAt?: string;
+}
 
 export interface BotState {
   version: 1;
@@ -12,6 +20,7 @@ export interface BotState {
   preferences: string;
   delivered: Record<string, number>;
   lastHealth: string | null;
+  loginAlerts?: Partial<Record<BrokerId, LoginAlertIncident>>;
   groups?: import('./groups.js').GroupRule[];
 }
 

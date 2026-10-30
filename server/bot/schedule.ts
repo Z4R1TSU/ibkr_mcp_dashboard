@@ -1,3 +1,14 @@
+import { newYorkDate } from '../daily-performance.js';
+import { isUsEquityTradingDate } from '../us-market-calendar.js';
+
+/** Only the session whose close falls within the preceding daily cycle is due. */
+export function scheduledReportDate(now: Date): string | null {
+  const ny = newYorkDate(now);
+  const date = ny.hour >= 16 ? ny.date
+    : new Date(Date.parse(ny.date + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  return isUsEquityTradingDate(date) ? date : null;
+}
+
 export type DailySchedule = { kind: 'none' } | { kind: 'invalid' } | { kind: 'valid'; time: string; timeZone: string };
 
 export function parseDailySchedule(input: string, defaultTimeZone: string): DailySchedule {

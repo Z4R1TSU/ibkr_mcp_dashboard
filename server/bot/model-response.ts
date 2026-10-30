@@ -2,6 +2,7 @@ export interface ModelResponseInfo {
   text: string;
   finishReason: string | null;
   completionTokens: number | null;
+  promptTokens: number | null;
   reasoningTokens: number | null;
   error: 'length' | 'empty' | 'format' | null;
 }
@@ -19,6 +20,7 @@ export function interpretModelResponse(input: unknown): ModelResponseInfo {
     text: result,
     finishReason: reason,
     completionTokens: Number.isFinite(data?.usage?.completion_tokens) ? data.usage.completion_tokens : null,
+    promptTokens: Number.isFinite(data?.usage?.prompt_tokens) ? data.usage.prompt_tokens : null,
     reasoningTokens: Number.isFinite(data?.usage?.completion_tokens_details?.reasoning_tokens) ? data.usage.completion_tokens_details.reasoning_tokens : null,
     error: result ? null : !choice ? 'format' : reason === 'length' ? 'length' : 'empty',
   };

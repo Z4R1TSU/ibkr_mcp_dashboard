@@ -1,4 +1,4 @@
-import { readBotConfig, readModelConfig } from './config.js';
+import { readBotConfig, readModelConfig, readMemoryConfig } from './config.js';
 import { BotStore } from './store.js';
 import { CliTransport } from './transport.js';
 import { CompatibleModel } from './model.js';
@@ -20,8 +20,9 @@ export function createBot(source: AccountSource, app: { publicUrl: string; dataD
     controls: undefined as IntegrationControls | undefined,
   };
   const transport = new CliTransport(config);
-  const memory = process.env.MEMORY_ENABLED === 'true' ? new ConversationMemory(config.dataDir) : undefined;
-  const research = new ResearchJobs(config.dataDir, new PythonResearchRunner(researchConfig(process.env), modelConfig));
+  const memoryConfig = readMemoryConfig(process.env);
+  const memory = process.env.MEMORY_ENABLED === 'true' ? new ConversationMemory(config.dataDir, memoryConfig.maxTurns, memoryConfig.maxChars) : undefined;
+  const research = new ResearchJobs(config.dataDir, new PythonResearchRunner(researchConfig(process.env), modelConfig, source.researchQuote));
   const bot = new PortfolioBot(config, new BotStore(config.dataDir, config.profile, config.ownerOpenId), source, transport, model, memory, research);
   const directory = new FeishuDirectory(config);
   return {

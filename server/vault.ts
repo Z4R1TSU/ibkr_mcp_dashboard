@@ -7,6 +7,7 @@ import { config } from './config.js';
 export interface VaultData {
   admin?: { salt: string; hash: string };
   oauth?: {
+    loginRequired?: boolean;
     client?: OAuthClientInformationMixed;
     tokens?: OAuthTokens;
     expiresAt?: number;

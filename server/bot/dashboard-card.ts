@@ -1,4 +1,5 @@
 import type { Amount, DashboardState, Snapshot } from '../../shared/types.js';
+import { dailyNavHistory, NAV_TIME_ZONE } from '../../shared/nav-history.js';
 
 export function isDashboardCommand(text: string): boolean {
   return /^(?:请)?(?:(?:打开|查看|展示|看看|显示|发一下|给我看看)\s*)?(?:账户|持仓)?看板[。！!？?]?$|^dashboard$/i.test(text.trim());
@@ -28,35 +29,54 @@ function metrics(snapshot: Snapshot | null): object {
   ]);
 }
 
-function historyChart(state: DashboardState, timeZone: string): object {
-  const points = state.history.filter(p => Number.isFinite(p.nav) && Number.isFinite(Date.parse(p.time)))
-    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time)).slice(-180);
-  if (points.length < 2) return group([md('**净值轨迹**'), md("<font color='grey'>至少采集两个净值快照后显示，暂无足够数据。</font>")]);
-  // Bound the payload, keeping both endpoints and chronological spacing.
-  const sampled = points.length <= 60 ? points : Array.from({ length: 60 }, (_, i) => points[Math.round(i * (points.length - 1) / 59)]);
-  const format = new Intl.DateTimeFormat('zh-CN', { timeZone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+function historyChart(state: DashboardState): object {
+  const timeZone = NAV_TIME_ZONE;
+  const points = dailyNavHistory([...(state.dailyHistory ?? []), ...state.history], timeZone).slice(-60);
+  if (points.length < 2) return group([md('**净值轨迹**'), md("<font color='grey'>至少积累两个日期的净值快照后显示；每天取最后一次采集，不补造历史。</font>")]);
+  const format = new Intl.DateTimeFormat('zh-CN', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const minimum = Math.min(...points.map(point => point.nav));
+  const maximum = Math.max(...points.map(point => point.nav));
+  const padding = Math.max((maximum - minimum) * 0.15, Math.max(Math.abs(minimum), Math.abs(maximum)) * 0.001, 0.01);
+  const unit = 10 ** Math.floor(Math.log10(padding));
+  const axisMin = Math.floor((minimum - padding) / unit) * unit;
+  const axisMax = Math.ceil((maximum + padding) / unit) * unit;
   return { tag: 'chart', aspect_ratio: '16:9', chart_spec: {
-    type: 'line', title: { text: '净值轨迹 / ' + (state.snapshot?.account.currency ?? ''), subtext: '实际采集快照 · 非收益率曲线 · ' + timeZone },
-    data: { values: sampled.map(p => ({ time: format.format(new Date(p.time)), value: p.nav })) },
+    type: 'line', title: { text: '净值轨迹 / ' + (state.snapshot?.account.currency ?? ''), subtext: '每日末次快照 · ' + timeZone },
+    data: { values: points.map(p => ({ time: format.format(new Date(p.time)), value: p.nav })) },
     xField: 'time', yField: 'value', color: ['#3370ff'],
+    point: { style: { size: 5 } },
+    axes: [
+      { orient: 'bottom', sampling: true, tickCount: 6, label: { autoHide: true, autoRotate: false } },
+      { orient: 'left', type: 'linear', zero: false, nice: false, min: axisMin, max: axisMax, tickCount: 5 },
+    ],
   } };
 }
 
 function allocationChart(snapshot: Snapshot | null): object {
   const unavailable = (reason: string) => group([md('**持仓分布**'), md("<font color='grey'>" + reason + '</font>')]);
-  if (!snapshot || !snapshot.positions.length) return unavailable('暂无持仓数据。');
-  if (!snapshot.analysis.allBaseCurrency || snapshot.positions.some(p => p.currency !== snapshot.account.currency || !finite(p.value))) {
-    return unavailable('持仓包含其他币种或缺失市值，暂不汇总分布。');
+  if (!snapshot) return unavailable('暂无持仓数据。');
+  const stocks = snapshot.positions.filter(position => position.kind === 'stock');
+  if (snapshot.account.currency === 'UNKNOWN' || stocks.some(p => p.currency !== snapshot.account.currency || !finite(p.value))) {
+    return unavailable('正股包含其他币种或缺失市值，暂不汇总分布。');
   }
-  const values = [
-    { kind: 'stock', label: '股票' }, { kind: 'option', label: '期权' }, { kind: 'other', label: '其他' },
-  ].map(c => ({ category: c.label, value: snapshot.positions.filter(p => p.kind === c.kind).reduce((sum, p) => sum + Math.abs(p.value!), 0) }))
-    .filter(p => p.value > 0);
-  if (!values.length) return unavailable('持仓绝对市值为零，暂无分布图。');
-  return { tag: 'chart', aspect_ratio: '16:9', chart_spec: {
-    type: 'pie', title: { text: '持仓分布 / ' + snapshot.account.currency, subtext: '绝对市值 · 不含现金 · 空头取绝对值' },
-    data: { values }, valueField: 'value', categoryField: 'category', innerRadius: 0.6,
-    color: ['#3370ff', '#7f6bff', '#a5bbff'], legends: { visible: true },
+  const cash = snapshot.account.cash;
+  if (!finite(cash)) return unavailable('现金余额未知，暂不汇总正股与现金分布。');
+  const amounts = stocks.map(p => ({ category: p.symbol + (p.value! < 0 ? '（空头）' : ''), amount: p.value! }))
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+  amounts.push({ category: cash < 0 ? '现金（借款）' : '现金', amount: cash });
+  const total = amounts.reduce((sum, item) => sum + Math.abs(item.amount), 0);
+  if (!total) return unavailable('正股与现金金额均为零，暂无分布图。');
+  const values = amounts.map(item => ({ ...item, value: Math.abs(item.amount),
+    label: item.category + ' · ' + (Math.abs(item.amount) / total * 100).toFixed(1) + '%' }));
+  const colors = ['#3370ff', '#7f6bff', '#00a6a6', '#f5a623', '#e86a92', '#4bba79', '#4db7e5', '#ab70d6', '#e47844', '#94b447', '#bc7199', '#588b8b'];
+  const signed = amounts.some(item => item.amount < 0);
+  return { tag: 'chart', aspect_ratio: '4:3', height: Math.min(950, Math.max(320, values.length * 28 + 100)) + 'px', chart_spec: {
+    type: 'pie', title: { text: '正股与现金 / ' + snapshot.account.currency,
+      subtext: signed ? '绝对金额占比 · 空头/借款取绝对值 · 不含期权' : '正股市值 + 现金占比 · 不含期权' },
+    // VChart's default outerRadius is 0.6; equal radii make the ring invisible.
+    data: { values }, valueField: 'value', categoryField: 'label', outerRadius: 0.85, innerRadius: 0.5,
+    color: [...stocks.map((_stock, index) => colors[index % colors.length]), '#8f959e'],
+    legends: { visible: true, orient: 'right' },
   } };
 }
 
@@ -69,6 +89,7 @@ export function dashboardCard(state: DashboardState, publicUrl: string, timeZone
   const url = new URL(publicUrl);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   const footer = [md("<font color='grey'>采集时间：" + time + '（' + escape(timeZone) + '）</font>', 'notation'),
+    md('净值轨迹按美东日期每天一个点，纵轴按所示净值范围缩放；取当天末次采集，今日数据仍会更新，非收盘净值或收益率。', 'notation'),
     md('发送“看板”查看最新快照；发送“刷新”重新采集。', 'notation'),
     md(local ? '[完整网页（仅服务所在电脑可打开）](' + url.href + ')' : '[打开完整网页](' + url.href + ')', 'notation')];
   return {
@@ -77,7 +98,7 @@ export function dashboardCard(state: DashboardState, publicUrl: string, timeZone
     header: { title: { tag: 'plain_text', content: '持仓看板' }, subtitle: { tag: 'plain_text', content: status },
       template: !snapshot || stale ? 'grey' : 'blue', icon: { tag: 'standard_icon', token: 'chart_colorful' } },
     body: { direction: 'vertical', padding: '12px', vertical_spacing: '12px', elements: [
-      metrics(snapshot), historyChart(state, timeZone), allocationChart(snapshot), group(footer),
+      metrics(snapshot), historyChart(state), allocationChart(snapshot), group(footer),
     ] },
   };
 }

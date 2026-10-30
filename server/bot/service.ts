@@ -1,28 +1,37 @@
 import type { DashboardState } from '../../shared/types.js';
+import type { BrokerAuthState, BrokerId } from '../../shared/broker-auth.js';
+import { LoginAlerts } from './login-alerts.js';
 import type { BotConfig } from './config.js';
 import type { BotMessage, BotTransport } from './transport.js';
 import type { AccountModel } from './model.js';
 import { BotStore } from './store.js';
-import { accountSummary, freshness, dataWarning, HELP, holdings, risks } from './answers.js';
-import { parseDailySchedule } from './schedule.js';
+import { accountSummary, freshness, dataWarning, HELP, holdings, risks, IB_LOGIN_HINT, ibkrLoginInstructions } from './answers.js';
+import { parseDailySchedule, scheduledReportDate } from './schedule.js';
 import { groupAllowed, withoutBotMention, validateGroups } from './groups.js';
 import { ConversationMemory } from './memory.js';
 import type { ModelMessage } from './model-protocol.js';
 import { createHash } from 'node:crypto';
 import { DailyReports, dailyFactsText } from '../daily-report.js';
 import type { DailyFacts } from '../daily-data.js';
+import type { DailyIndicators } from '../daily-indicators.js';
 import { dashboardCard, isDashboardCommand } from './dashboard-card.js';
+import { resolveSlashCommand } from './slash-commands.js';
 import { ResearchJobs, parseResearchCommand, RESEARCH_HELP, type ResearchCommand } from '../research/jobs.js';
 import { researchAccount, researchDate } from '../research/runner.js';
+import type { ResearchQuoteSource } from '../research/quotes.js';
 
 interface ChatContext { inGroup: boolean; history: ModelMessage[]; speaker: string }
 
 export interface AccountSource {
+  researchQuote?: ResearchQuoteSource;
+  authStatus?(broker: BrokerId): BrokerAuthState;
   view(): DashboardState;
   refresh(): Promise<void>;
   forex?(): Promise<string>;
   forexAnalysis?(question: string): Promise<string>;
   dailyFacts?(): Promise<DailyFacts>;
+  dailySnapshot?(facts: DailyFacts): DailyFacts;
+  dailyIndicators?(date: string): Promise<DailyIndicators>;
 }
 
 export class PortfolioBot {
@@ -32,6 +41,7 @@ export class PortfolioBot {
   private tickPending = false;
   private lastRefresh = 0;
   private readonly reports?: DailyReports;
+  readonly loginAlerts: LoginAlerts;
   readonly activity = { lastMessageAt: null as string | null, lastReplyAt: null as string | null, lastPushAt: null as string | null, error: null as string | null };
   constructor(
     readonly config: BotConfig, readonly store: BotStore,
@@ -40,7 +50,9 @@ export class PortfolioBot {
     private readonly memory?: ConversationMemory,
     private readonly research?: ResearchJobs,
   ) {
-    if (source.dailyFacts) this.reports = new DailyReports(config.dataDir, model, () => source.dailyFacts!());
+    this.loginAlerts = new LoginAlerts(config, store, broker => source.authStatus?.(broker) ?? 'unknown',
+      transport, at => { this.activity.lastPushAt = at; });
+    if (source.dailyFacts) this.reports = new DailyReports(config.dataDir, model, () => source.dailyFacts!(), source.dailySnapshot, source.dailyIndicators);
   }
 
   previewDaily(): Promise<string> {
@@ -48,15 +60,17 @@ export class PortfolioBot {
     this.queue = result.then(() => undefined, () => undefined);
     return result;
   }
-  private generateDaily(): Promise<string> {
+  private generateDaily(expectedDate?: string): Promise<string> {
     if (!this.reports) return Promise.reject(new Error('日报数据源尚未配置'));
-    return this.reports.generate(this.store.state.preferences);
+    return this.reports.generate(this.store.state.preferences, expectedDate);
   }
 
   status() {
     return { enabled: true, paired: Boolean(this.store.state.ownerOpenId), pairing: this.store.pairingInfo(),
+      loginAlerts: this.loginAlerts.status(),
       groups: this.store.state.groups ?? [],
       memoryEnabled: Boolean(this.memory), memoryTurns: this.memory?.maxTurns ?? 0,
+      contextBudgetTokens: this.model.contextTokens ?? null,
       dailyTime: this.store.state.dailyTime, alerts: this.store.state.alerts, timeZone: this.store.state.dailyTimeZone ?? this.config.timeZone,
       modelConfigured: this.model.configured, modelName: this.model.configured ? this.model.name : null, modelDiagnostics: this.model.diagnostics ?? null,
       research: this.research?.status() ?? null, ...this.activity };
@@ -78,6 +92,7 @@ export class PortfolioBot {
   }
 
   start(): void {
+    this.loginAlerts.start();
     this.timer = setInterval(() => {
       if (this.tickPending) return;
       this.tickPending = true;
@@ -88,6 +103,7 @@ export class PortfolioBot {
 
   async stop(): Promise<void> {
     clearInterval(this.timer);
+    await this.loginAlerts.stop();
     await this.research?.stop();
     await this.queue;
   }
@@ -131,7 +147,17 @@ export class PortfolioBot {
       if (!inGroup && message.sender_id !== this.store.state.ownerOpenId) return;
       this.activity.lastMessageAt = new Date().toISOString();
       const scope = inGroup ? 'group:' + message.chat_id : 'dm:' + message.sender_id;
-      const text = message.content.trim();
+      const originalText = message.content.trim();
+      const slash = resolveSlashCommand(originalText);
+      if (slash && 'error' in slash) {
+        await receipt;
+        await this.transport.send(inGroup ? message.chat_id! : message.sender_id, slash.error, key);
+        this.store.markDelivered(key);
+        this.activity.lastReplyAt = new Date().toISOString();
+        this.activity.error = null;
+        return;
+      }
+      const text = slash?.text ?? originalText;
       const research = parseResearchCommand(text);
       if (research) {
         await receipt;
@@ -160,7 +186,7 @@ export class PortfolioBot {
         try { await this.transport.sendCard(recipient, dashboardCard(dashboard, this.config.publicUrl, this.config.timeZone), key); }
         catch { await this.transport.send(recipient, '看板卡片暂时发送失败，先展示账户摘要。\n\n' + answer, key); }
       } else await this.transport.send(recipient, answer, key);
-      if (!clear) this.memory?.append(scope, speaker ? '[' + speaker + '] ' + text : text, answer);
+      if (!clear) this.memory?.append(scope, speaker ? '[' + speaker + '] ' + originalText : originalText, answer);
     }
     this.store.markDelivered(key);
     this.activity.lastReplyAt = new Date().toISOString();
@@ -180,8 +206,15 @@ export class PortfolioBot {
     if (command.kind === 'cancel') { await send(this.research.cancel(scope, message.sender_id, this.store.state.ownerOpenId)); return; }
     if (command.kind !== 'run') return;
     let task: ReturnType<ResearchJobs['prepare']>;
+    // Read positions when the job actually starts, so the report reflects
+    // trades made since the last background read. A failed or slow read keeps
+    // the cached snapshot, whose own fetchedAt/stale fields go into the report.
+    const account = async () => {
+      await Promise.race([this.source.refresh().catch(() => {}), new Promise(resolve => setTimeout(resolve, 30000).unref())]);
+      return researchAccount(this.source.view());
+    };
     try {
-      task = this.research.prepare(scope, message.sender_id, { ticker: command.ticker, date: researchDate(), account: researchAccount(this.source.view()) });
+      task = this.research.prepare(scope, message.sender_id, { ticker: command.ticker, date: researchDate(), account });
     } catch (error) { await send(error instanceof Error ? error.message : '暂时无法启动研究。'); return; }
     try { await send(task.acknowledgement); }
     catch (error) { task.discard(); throw error; }
@@ -209,8 +242,12 @@ export class PortfolioBot {
     if (['摘要', '账户', '账户摘要', 'summary'].includes(command)) return facts(accountSummary(state));
     if (['持仓', 'positions', '我的持仓'].includes(command)) return facts(holdings(state));
     if (['风险', '到期', '期权', 'risk'].includes(command)) return facts(risks(state));
-    if (['换汇', '换汇记录', '今年换汇', '今年换汇记录'].includes(command)) return this.source.forex ? this.source.forex() : '换汇记录尚未接入。';
-    if (['连接ib', '授权', '登录'].includes(command)) return '请在运行服务的电脑打开 ' + this.config.publicUrl + ' ，点击“连接 IB”完成官方只读授权。本机地址不能在其他设备直接访问。';
+    if (['换汇', '换汇记录', '今年换汇', '今年换汇记录'].includes(command)) {
+      if (!this.source.forex) return '换汇记录尚未接入。';
+      const report = await this.source.forex();
+      return report + (!this.source.view().status.connected ? '\n\n' + IB_LOGIN_HINT : '');
+    }
+    if (['连接ib', '授权', '登录'].includes(command)) return ibkrLoginInstructions(this.config.publicUrl);
     if (command.startsWith('绑定')) return '此机器人已绑定，不能通过聊天更换账户持有人。';
     return this.answerSettings(text, command, state, context);
   }
@@ -219,7 +256,8 @@ export class PortfolioBot {
     if (['状态', 'status', '模型状态'].includes(command)) return [
       '飞书消息链路正常', this.model.configured ? '模型：' + this.model.name : '模型：待配置',
       '日报：' + (this.store.state.dailyTime ?? '关闭') + '（' + (this.store.state.dailyTimeZone ?? this.config.timeZone) + '）',
-      '状态提醒：' + (this.store.state.alerts ? '开启' : '关闭'), freshness(state),
+      '登录失效提醒：自动开启（IBKR / 嘉信，每次失效一次）',
+      '数据过期／恢复提醒：' + (this.store.state.alerts ? '开启' : '关闭'), freshness(state),
     ].join('\n');
     if (command === '刷新') {
       if (Date.now() - this.lastRefresh < 30000) return '请至少间隔 30 秒再刷新。';
@@ -231,7 +269,7 @@ export class PortfolioBot {
     const daily = parseDailySchedule(text, this.config.timeZone);
     if (daily.kind === 'valid') {
       this.setDaily(text);
-      return '已订阅每天 ' + daily.time + ' 的账户日报，时区 ' + daily.timeZone + '。发送“取消日报”可停止。';
+      return '已订阅账户日报，发送时间 ' + daily.time + '，时区 ' + daily.timeZone + '；仅在有新完成的美股交易日时推送，同一交易日只推送一次。发送“取消日报”可停止。';
     }
     if (daily.kind === 'invalid') return '没有识别到唯一有效的时间。可以说“订阅日报北京时间 11:00 发送”或“每天上午11点给我发日报”。';
     if (command === '取消日报') {
@@ -241,7 +279,8 @@ export class PortfolioBot {
     if (['开启提醒', '关闭提醒'].includes(command)) {
       this.store.state.alerts = command === '开启提醒';
       this.store.state.lastHealth = null; this.store.save();
-      return this.store.state.alerts ? '已开启 IB 授权与数据过期/恢复提醒，状态不变时不重复推送。' : '已关闭状态提醒。';
+      return (this.store.state.alerts ? '已开启账户数据过期／恢复提醒。' : '已关闭账户数据过期／恢复提醒。')
+        + 'IBKR 和嘉信登录失效提醒始终自动开启，每次失效只推送一次。';
     }
     return this.answerPersonal(text, command, state, context);
   }
@@ -285,24 +324,29 @@ export class PortfolioBot {
     if (scheduled) {
       const [hour, minute] = scheduled.split(':').map(Number);
       const delay = time - hour * 60 - minute;
-      const key = 'daily:' + day;
-      if (delay >= 0 && delay < 60 && !this.store.delivered(key, now.getTime())) {
-        await this.transport.send(owner, await this.generateDaily(), key);
-        this.store.markDelivered(key, now.getTime());
-        this.activity.lastPushAt = now.toISOString();
+      // Retain the calendar-day key for existing deliveries and time changes.
+      const dayKey = 'daily:' + day;
+      if (delay >= 0 && delay < 60 && !this.store.delivered(dayKey, now.getTime())) {
+        const reportDate = scheduledReportDate(now);
+        const key = 'daily-report:' + reportDate;
+        if (reportDate && !this.store.delivered(key, now.getTime())) {
+          await this.transport.send(owner, await this.generateDaily(reportDate), key);
+          this.store.state.delivered[key] = now.getTime();
+          this.store.markDelivered(dayKey, now.getTime());
+          this.activity.lastPushAt = now.toISOString();
+        }
       }
     }
     await this.alert(state, now);
   }
 
   private async alert(state: DashboardState, now: Date): Promise<void> {
-    if (!this.store.state.alerts) return;
-    const health = !state.status.connected ? 'auth' : state.status.stale ? 'stale' : 'fresh';
-    const previous = this.store.state.lastHealth;
+    if (!this.store.state.alerts || !state.status.connected || this.source.authStatus?.('ibkr') === 'login_required') return;
+    const health = state.status.stale ? 'stale' : 'fresh';
+    const previous = this.store.state.lastHealth === 'auth' ? null : this.store.state.lastHealth;
     if (previous === health) return;
     if (health !== 'fresh' || previous !== null) {
-      const message = health === 'auth' ? 'IB 授权待恢复，请在服务所在电脑打开看板并点击“连接 IB”。'
-        : health === 'stale' ? '账户数据已过期，服务正在重试。' : 'IB 账户数据采集已恢复。';
+      const message = health === 'stale' ? '账户数据已过期，服务正在重试。' : 'IB 账户数据采集已恢复。';
       const key = 'alert:' + previous + ':' + health + ':' + Math.floor(now.getTime() / 3600000);
       await this.transport.send(this.store.state.ownerOpenId, message + '\n' + this.config.publicUrl + '\n\n' + freshness(state), key);
       this.activity.lastPushAt = now.toISOString();

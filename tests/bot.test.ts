@@ -29,12 +29,122 @@ function fixture(owner = 'ou_owner') {
     acknowledge: async (id: string) => { acknowledged.push(id); },
     sendCard: async (to: string, card: object) => { cards.push({ to, card }); } };
   const bot = new PortfolioBot(config, store, source, transport, model);
-  return { directory, config, state, sent, acknowledged, cards, transport, store, bot, refreshes: () => refreshes, clean: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  return { directory, config, state, source, sent, acknowledged, cards, transport, store, bot, refreshes: () => refreshes, clean: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
 
 let sequence = 0;
+
+test('slash commands use account handlers, rate limits and deterministic usage replies', async () => {
+  const f = fixture();
+  let modelCalls = 0;
+  let refreshes = 0;
+  const model = { configured: true, name: 'unused', answer: async () => { modelCalls++; return 'model'; } };
+  const bot = new PortfolioBot(f.config, f.store, { view: () => f.state, refresh: async () => { refreshes++; }, forex: async () => '换汇测试' }, f.transport, model);
+  try {
+    await bot.receive(message('/summary'));
+    assert.match(f.sent.at(-1)!.text, /1,000 USD/);
+    await bot.receive(message('/dashboard'));
+    assert.equal(f.cards.length, 1);
+    await bot.receive(message('/fx'));
+    assert.equal(f.sent.at(-1)!.text, '换汇测试');
+    await bot.receive(message('/refresh'));
+    await bot.receive(message('/refresh'));
+    assert.equal(refreshes, 1);
+    const invalid = message('/summary unexpected');
+    await bot.receive(invalid);
+    const count = f.sent.length;
+    await bot.receive(invalid);
+    assert.equal(f.sent.length, count);
+    assert.match(f.sent.at(-1)!.text, /用法/);
+    await bot.receive(message('/buy AAPL'));
+    assert.match(f.sent.at(-1)!.text, /未知/);
+    assert.equal(modelCalls, 0);
+  } finally { await bot.stop(); f.clean(); }
+});
+
+test('slash aliases preserve owner-only settings and group mention checks', async () => {
+  const f = fixture();
+  try {
+    await f.bot.receive({ ...message('/summary'), sender_id: 'ou_other' });
+    assert.equal(f.sent.length, 0);
+    f.bot.updateGroups([{ chatId: 'oc_test', name: 'Test', access: 'members', members: [] }]);
+    await f.bot.receive({ ...groupMessage('/risk'), mentions: [] });
+    assert.equal(f.sent.length, 0);
+    await f.bot.receive(groupMessage('@_user_1 /risk'));
+    assert.match(f.sent.at(-1)!.text, /账户风险/);
+    await f.bot.receive(groupMessage('/alerts on'));
+    assert.equal(f.store.state.alerts, false);
+    assert.match(f.sent.at(-1)!.text, /私聊/);
+    await f.bot.receive(groupMessage('/daily 09:30', 'ou_owner'));
+    assert.equal(f.store.state.dailyTime, null);
+    await f.bot.receive(message('/daily 9:30'));
+    assert.equal(f.store.state.dailyTime, '09:30');
+    assert.equal(f.store.state.dailyTimeZone, 'Asia/Shanghai');
+    await f.bot.receive(message('/daily off'));
+    assert.equal(f.store.state.dailyTime, null);
+    await f.bot.receive(message('/alerts on'));
+    assert.equal(f.store.state.alerts, true);
+  } finally { await f.bot.stop(); f.clean(); }
+});
 const groupMessage = (content: string, sender = 'ou_guest') => ({ ...message(content), sender_id: sender, chat_type: 'group', chat_id: 'oc_test', mentions: [{ id: 'ou_bot', name: '持仓助手', key: '@_user_1' }] });
 const message = (content: string) => ({ sender_id: 'ou_owner', sender_type: 'user', chat_type: 'p2p', message_type: 'text', message_id: 'om_' + ++sequence, create_time: String(Date.now()), content });
+
+test('login works without IB and returns the entry only in the owner DM', async () => {
+  const f = fixture();
+  f.state.status.connected = false;
+  f.config.publicUrl = 'http://127.0.0.1:62481';
+  const unexpected = async () => { throw new Error('Login must not call the model or IB'); };
+  const bot = new PortfolioBot(f.config, f.store, { view: () => f.state, refresh: unexpected, forex: unexpected },
+    f.transport, { configured: true, name: 'unused', answer: unexpected });
+  try {
+    await bot.receive(message('/login'));
+    assert.equal(f.sent.length, 1);
+    assert.ok(f.sent[0].text.includes(f.config.publicUrl));
+    assert.match(f.sent[0].text, /连接 IB.*只读授权/);
+    assert.match(f.sent[0].text, /SSH 隧道/);
+    assert.match(f.sent[0].text, /同一浏览器/);
+    await bot.receive({ ...message('/login'), sender_id: 'ou_other' });
+    assert.equal(f.sent.length, 1);
+    bot.updateGroups([{ chatId: 'oc_test', name: 'Test', access: 'members', members: [] }]);
+    for (const sender of ['ou_owner', 'ou_guest']) {
+      await bot.receive(groupMessage('/login', sender));
+      assert.match(f.sent.at(-1)!.text, /仅允许账户持有人在私聊/);
+      assert.equal(f.sent.at(-1)!.text.includes(f.config.publicUrl), false);
+    }
+    f.config.publicUrl = 'https://portfolio.example';
+    await bot.receive(message('连接 IB'));
+    assert.ok(f.sent.at(-1)!.text.includes(f.config.publicUrl));
+    assert.doesNotMatch(f.sent.at(-1)!.text, /SSH|本机地址|手机无法/);
+    await bot.receive(message('/help'));
+    assert.ok(f.sent.at(-1)!.text.includes('/login'));
+  } finally { await bot.stop(); f.clean(); }
+});
+
+test('IB recovery hints reflect authorization loss during FX reads and disappear after recovery', async () => {
+  const f = fixture();
+  const model = new CompatibleModel(readModelConfig({}));
+  const bot = new PortfolioBot(f.config, f.store, {
+    view: () => f.state, refresh: async () => {},
+    forex: async () => { f.state.status.connected = false; return '换汇读取失败'; },
+  }, f.transport, model);
+  try {
+    await bot.receive(message('/status'));
+    assert.equal(f.sent.at(-1)!.text.includes('/login'), false);
+    await bot.receive(message('/fx'));
+    assert.match(f.sent.at(-1)!.text, /换汇读取失败/);
+    assert.ok(f.sent.at(-1)!.text.includes('/login'));
+    await bot.receive(message('/status'));
+    assert.match(f.sent.at(-1)!.text, /IB 授权待恢复/);
+    assert.ok(f.sent.at(-1)!.text.includes('/login'));
+    await bot.receive(message('/summary'));
+    assert.ok(f.sent.at(-1)!.text.includes('/login'));
+    f.state.status.connected = true;
+    for (const command of ['/status', '/summary']) {
+      await bot.receive(message(command));
+      assert.equal(f.sent.at(-1)!.text.includes('/login'), false);
+    }
+  } finally { await bot.stop(); f.clean(); }
+});
 
 test('queued messages get receipt feedback before a slow model completes', async () => {
   const f = fixture();
@@ -94,7 +204,7 @@ test('duplicate messages reply once, and dedup survives restart', async () => {
 
 test('daily push requires subscription, survives restart, and stops after cancellation', async () => {
   const f = fixture();
-  const now = new Date(); now.setUTCHours(1, 0, 0, 0);
+  const now = new Date('2026-09-26T01:00:00Z');
   const dateKey = now.toISOString().slice(0, 10);
   try {
     await f.bot.tick(now);
@@ -102,12 +212,97 @@ test('daily push requires subscription, survives restart, and stops after cancel
     await f.bot.receive(message('订阅日报 09:00'));
     await f.bot.tick(now);
     await f.bot.tick(new Date(now.getTime() + 30 * 60000));
-    assert.equal(f.sent.filter(s => s.key.startsWith('daily:')).length, 1);
+    assert.equal(f.sent.filter(s => s.key.startsWith('daily-report:')).length, 1);
     const restored = new BotStore(f.directory, 'test');
     assert.equal(restored.delivered('daily:' + dateKey, now.getTime()), true);
     await f.bot.receive(message('取消日报'));
     await f.bot.tick(new Date(now.getTime() + 86400000));
-    assert.equal(f.sent.filter(s => s.key.startsWith('daily:')).length, 1);
+    assert.equal(f.sent.filter(s => s.key.startsWith('daily-report:')).length, 1);
+  } finally { f.clean(); }
+});
+
+test('11 AM Beijing skips Sunday and Monday, then resumes with a new report on Tuesday', async () => {
+  const f = fixture();
+  let reportDate = '2026-10-16', loads = 0;
+  f.source.dailyFacts = async () => {
+    loads++;
+    const facts = dailyFixture();
+    return { ...facts, date: reportDate, account: { ...facts.account, date: reportDate } };
+  };
+  f.store.state.dailyTime = '11:00';
+  try {
+    await f.bot.tick(new Date('2026-10-17T03:00:00Z'));
+    await f.bot.tick(new Date('2026-10-18T03:00:00Z'));
+    await f.bot.tick(new Date('2026-10-19T03:00:00Z'));
+    assert.equal(f.sent.length, 1);
+    assert.match(f.sent[0].text, /美股交易日报｜2026-10-16/);
+    assert.equal(loads, 1);
+    reportDate = '2026-10-19';
+    await f.bot.tick(new Date('2026-10-20T03:00:00Z'));
+    assert.equal(f.sent.length, 2);
+    assert.match(f.sent[1].text, /美股交易日报｜2026-10-19/);
+    // Manual requests remain available on weekends.
+    await f.bot.receive(message('/daily'));
+    assert.equal(f.sent.length, 3);
+  } finally { f.clean(); }
+});
+
+test('report-date dedup survives restart and changing the schedule across midnight', async () => {
+  const f = fixture();
+  f.store.state.dailyTime = '21:00';
+  f.store.state.dailyTimeZone = 'UTC';
+  try {
+    await f.bot.tick(new Date('2026-09-25T21:00:00Z'));
+    const restored = new BotStore(f.directory, 'test');
+    restored.state.dailyTime = '01:00';
+    const bot = new PortfolioBot(f.config, restored, f.source, f.transport, new CompatibleModel(readModelConfig({})));
+    await bot.tick(new Date('2026-09-26T01:00:00Z'));
+    assert.equal(f.sent.length, 1);
+    assert.match(f.sent[0].text, /2026-09-25/);
+  } finally { f.clean(); }
+});
+
+test('stale data and send failures retry within the hour without marking the report delivered', async () => {
+  const f = fixture();
+  f.store.state.dailyTime = '11:00';
+  try {
+    const now = new Date('2026-09-29T03:00:00Z');
+    await assert.rejects(f.bot.tick(now), /目标交易日/);
+    assert.equal(f.sent.length, 0);
+    assert.equal(fs.existsSync(path.join(f.directory, 'daily-reports')), false);
+    f.source.dailyFacts = async () => {
+      const facts = dailyFixture();
+      return { ...facts, date: '2026-09-28', account: { ...facts.account, date: '2026-09-28' } };
+    };
+    const send = f.transport.send;
+    f.transport.send = async () => { throw new Error('send failed'); };
+    await assert.rejects(f.bot.tick(new Date('2026-09-29T03:10:00Z')), /send failed/);
+    assert.equal(f.store.delivered('daily-report:2026-09-28', now.getTime()), false);
+    f.transport.send = send;
+    await f.bot.tick(new Date('2026-09-29T03:20:00Z'));
+    await f.bot.tick(new Date('2026-09-29T03:30:00Z'));
+    assert.equal(f.sent.length, 1);
+    assert.match(f.sent[0].text, /2026-09-28/);
+  } finally { f.clean(); }
+});
+
+test('existing daily deliveries survive upgrade and missed reports expire after an hour', async () => {
+  const f = fixture();
+  const now = new Date('2026-09-26T03:00:00Z');
+  f.store.state.dailyTime = '11:00';
+  f.source.dailyFacts = async () => { throw new Error('should not load'); };
+  try {
+    await f.bot.tick(new Date('2026-09-26T02:59:00Z'));
+    await f.bot.tick(new Date('2026-09-26T04:00:00Z'));
+    f.store.markDelivered('daily:2026-09-26', now.getTime());
+    await f.bot.tick(now);
+    assert.equal(f.sent.length, 0);
+    // Skipping weekend reports must still allow configured data alerts.
+    f.store.state.alerts = true;
+    f.state.status.stale = true;
+    await f.bot.tick(new Date('2026-09-27T03:00:00Z'));
+    assert.equal(f.sent.length, 1);
+    assert.ok(f.sent[0].key.startsWith('alert:'));
   } finally { f.clean(); }
 });
 
@@ -145,15 +340,15 @@ test('pairing requires a valid one-time code and persists the owner', async () =
   } finally { f.clean(); }
 });
 
-test('alerts emit only on health changes and preferences are persistent', async () => {
+test('data alerts emit only on freshness changes and preferences are persistent', async () => {
   const f = fixture();
   try {
     await f.bot.receive(message('开启提醒'));
-    f.state.status.connected = false;
+    f.state.status.stale = true;
     await f.bot.tick();
     await f.bot.tick();
     assert.equal(f.sent.filter(s => s.key.startsWith('alert:')).length, 1);
-    f.state.status.connected = true;
+    f.state.status.stale = false;
     await f.bot.tick();
     assert.equal(f.sent.filter(s => s.key.startsWith('alert:')).length, 2);
     await f.bot.receive(message('关闭提醒'));
@@ -164,6 +359,71 @@ test('alerts emit only on health changes and preferences are persistent', async 
     assert.equal(new BotStore(f.directory, 'test').state.preferences, '保留半年生活费作为现金');
     await f.bot.receive(message('清除偏好'));
     assert.equal(new BotStore(f.directory, 'test').state.preferences, '');
+  } finally { f.clean(); }
+});
+
+test('login alerts run during a blocked model reply and stay enabled after alerts off', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture();
+  const entered = Promise.withResolvers<void>(), answer = Promise.withResolvers<string>();
+  let failed = false;
+  const bot = new PortfolioBot(f.config, f.store, {
+    ...f.source, authStatus: broker => failed && broker === 'schwab' ? 'login_required' : 'ready',
+  }, f.transport, { configured: true, name: 'fixture', answer: async () => { entered.resolve(); return answer.promise; } });
+  try {
+    await bot.receive(message('/alerts off'));
+    assert.match(f.sent.at(-1)!.text, /登录失效提醒始终自动开启/);
+    bot.start();
+    await bot.loginAlerts.check();
+    const work = bot.receive(message('分析一下目前的仓位'));
+    await entered.promise;
+    failed = true;
+    t.mock.timers.tick(30000);
+    await bot.loginAlerts.check();
+    assert.equal(f.sent.filter(row => row.key.startsWith('login-alert:')).length, 1);
+    assert.ok(bot.status().loginAlerts.running);
+    answer.resolve('模型回复');
+    await work;
+  } finally { answer.resolve('结束'); await bot.stop(); f.clean(); }
+  assert.equal(bot.status().loginAlerts.running, false);
+});
+
+test('daily failures cannot stop login alerts', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture();
+  let failed = false;
+  f.store.state.dailyTime = '11:00';
+  f.source.dailyFacts = async () => { throw new Error('daily unavailable'); };
+  const bot = new PortfolioBot(f.config, f.store, {
+    ...f.source, authStatus: broker => failed && broker === 'ibkr' ? 'login_required' : 'ready',
+  }, f.transport, { configured: false, name: 'fixture', answer: async () => '' });
+  try {
+    bot.start();
+    await bot.loginAlerts.check();
+    await assert.rejects(bot.tick(new Date('2026-10-27T03:00:00Z')), /daily unavailable/);
+    failed = true;
+    t.mock.timers.tick(30000);
+    await bot.loginAlerts.check();
+    assert.equal(f.sent.filter(row => row.key.startsWith('login-alert:')).length, 1);
+  } finally { await bot.stop(); f.clean(); }
+});
+
+test('legacy data alerts suppress auth outages and do not emit a fake recovery', async () => {
+  const f = fixture();
+  try {
+    f.store.state.alerts = true;
+    f.store.state.lastHealth = 'auth';
+    f.state.status.connected = false;
+    f.state.status.stale = true;
+    await f.bot.tick();
+    assert.equal(f.sent.length, 0);
+    f.state.status.connected = true;
+    f.state.status.stale = false;
+    await f.bot.tick();
+    assert.equal(f.sent.length, 0);
+    f.state.status.stale = true;
+    await f.bot.tick();
+    assert.equal(f.sent.length, 1);
   } finally { f.clean(); }
 });
 

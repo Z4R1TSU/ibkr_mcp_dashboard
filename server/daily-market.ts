@@ -1,9 +1,11 @@
 import { newYorkDate } from './daily-performance.js';
 
 export interface DailyBar {
+  source?: 'ibkr' | 'thinkorswim'; adjustment?: string;
   date: string; time: string; open: number; close: number; corporateActions: string[];
 }
 export interface MarketDay {
+  source?: 'ibkr' | 'thinkorswim'; adjustment?: string;
   symbol: string; label: string; date: string; close: number;
   dayChangePct: number | null; sessionChangePct: number; corporateActions: string[];
 }
@@ -27,5 +29,6 @@ export function marketDay(bars: DailyBar[], date: string, symbol: string, label:
   if (i < 0) return null;
   const bar = bars[i], previous = bars[i - 1];
   return { symbol, label, date, close: bar.close, sessionChangePct: (bar.close / bar.open - 1) * 100,
+    ...(bar.source ? { source: bar.source, adjustment: bar.adjustment } : {}),
     dayChangePct: previous ? (bar.close / previous.close - 1) * 100 : null, corporateActions: bar.corporateActions };
 }

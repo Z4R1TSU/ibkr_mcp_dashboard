@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { dailyPerformance, completedDay } from '../server/daily-performance.js';
 import { dailyBars, marketDay } from '../server/daily-market.js';
 import { DailyReports, dailyFactsText } from '../server/daily-report.js';
@@ -44,16 +45,38 @@ test('daily report contains P&L and market recap and saves a private copy', asyn
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibkr-daily-test-'));
   try {
     let calls = 0;
-    const model = { configured: true, name: 'fake', answer: async () => { calls++; return '大盘上涨，持仓样本表现更强。'; } };
+    const model = { configured: true, name: 'fake', answer: async (_question: string, _state: unknown, _preferences: string, context: string) => {
+      calls++;
+      assert.doesNotMatch(context, /场内|开盘至收盘|0\.50%/);
+      return '大盘上涨，持仓样本表现更强。';
+    } };
     const reports = new DailyReports(dir, model, async () => dailyFixture());
     const text = await reports.generate();
     assert.match(text, /昨日盈亏/);
     assert.match(text, /10.00 USD/);
     assert.match(text, /大盘价格表现/);
     assert.match(text, /行情复盘/);
+    assert.match(text, /SPY：\+1\.00%\n/);
+    assert.match(text, /AAPL：\+2\.00%(?:\n|$)/);
+    assert.doesNotMatch(text, /场内|开盘至收盘|0\.50%/);
     assert.doesNotMatch(text, /数据源：.*MCP/);
     assert.equal(await reports.generate(), text);
     assert.equal(calls, 1);
     assert.equal(fs.statSync(path.join(dir, 'daily-reports', '2026-09-25.txt')).mode & 0o777, 0o600);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('version 3 reports cached without account background are regenerated', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibkr-daily-cache-'));
+  try {
+    const facts = dailyFixture();
+    const fingerprint = createHash('sha256').update(JSON.stringify({ version: 3, ...facts, generatedAt: '', preferences: '' })).digest('hex');
+    fs.mkdirSync(path.join(dir, 'daily-reports'));
+    fs.writeFileSync(path.join(dir, 'daily-reports', facts.date + '.json'), JSON.stringify({ facts, fingerprint, text: '旧日报（场内 +1.00%）' }));
+    const reports = new DailyReports(dir, { configured: false, name: 'unused', answer: async () => '' }, async () => facts);
+    const text = await reports.generate();
+    assert.match(text, /美股交易日报/);
+    assert.doesNotMatch(text, /场内|开盘至收盘/);
+    assert.equal(fs.readFileSync(path.join(dir, 'daily-reports', facts.date + '.txt'), 'utf8'), text);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

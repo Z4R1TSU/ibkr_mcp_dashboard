@@ -118,6 +118,6 @@ export function normalizeQuote(id: number, raw: unknown, fetchedAt: string): Quo
   const timestamp = numeric(last.ts);
   const milliseconds = timestamp !== null ? timestamp * 1000 : null;
   const lastTradeAt = milliseconds !== null && milliseconds > 0 && milliseconds < 8640000000000000 ? new Date(milliseconds).toISOString() : null;
-  return { id, fetchedAt, last: numeric(last.price), lastTradeAt, lastIsClose: typeof last.is_close === 'boolean' ? last.is_close : null,
+  return { id, source: 'ibkr', fetchedAt, last: numeric(last.price), lastTradeAt, lastIsClose: typeof last.is_close === 'boolean' ? last.is_close : null,
     mark: numeric(mark.price), bid: numeric(bidAsk.bid), ask: numeric(bidAsk.ask), status: typeof top.status === 'string' ? top.status : 'UNKNOWN' };
 }

@@ -1,18 +1,31 @@
 import type { Amount, DashboardState } from '../../shared/types.js';
+import { SLASH_HELP } from './slash-commands.js';
 
 const number = (v: Amount) => v === null ? '未知' : v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 const money = (v: Amount, currency: string) => number(v) + (v === null ? '' : ' ' + currency);
 const percent = (v: Amount) => v === null ? '未知' : number(v * 100) + '%';
 
+export const IB_LOGIN_HINT = '恢复授权：请账户管理员在机器人私聊中发送 /login。';
+
+export function ibkrLoginInstructions(publicUrl: string): string {
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(publicUrl).hostname);
+  return [
+    'IB 只读授权入口：' + publicUrl,
+    '在浏览器登录看板后，点击“连接 IB”，在 IB 官方页面完成只读授权。请使用同一浏览器完成整个流程。',
+    local ? '当前是本机地址，请在运行服务或已建立 SSH 隧道的电脑浏览器打开；通过隧道访问时请保持连接，手机无法直接打开。' : '',
+    '授权完成后发送 /refresh，再用 /status 查看采集时间，或用 /fx 查询换汇记录。',
+  ].filter(Boolean).join('\n');
+}
+
 export function freshness(state: DashboardState): string {
   const time = state.snapshot?.fetchedAt;
   const label = !state.status.connected ? 'IB 授权待恢复；以下为旧快照' : state.status.stale ? '快照已过期' : '最近账户快照';
-  return label + '\n采集时间：' + (time ? new Date(time).toISOString() : '尚未采集');
+  return label + '\n采集时间：' + (time ? new Date(time).toISOString() : '尚未采集') + (!state.status.connected ? '\n' + IB_LOGIN_HINT : '');
 }
 
 export function dataWarning(state: DashboardState): string {
   if (state.status.connected && !state.status.stale) return '';
-  return '\n\n' + (!state.status.connected ? 'IB 授权待恢复，以上使用旧快照。' : '快照已过期，以上数据可能尚未更新。');
+  return '\n\n' + (!state.status.connected ? 'IB 授权待恢复，以上使用旧快照。\n' + IB_LOGIN_HINT : '快照已过期，以上数据可能尚未更新。');
 }
 
 export function accountSummary(state: DashboardState): string {
@@ -54,13 +67,14 @@ export function risks(state: DashboardState): string {
 
 export const HELP = [
   '持仓助手',
+  SLASH_HELP,
   '看板：在聊天内查看关键指标、持仓分布和净值轨迹',
   '摘要 / 持仓 / 风险 / 到期 / 今年换汇 / 状态 / 刷新 / 连接 IB',
   '/research AAPL：TradingAgents 后台只读研究；固定命令，所有角色复用当前模型，绝不下单',
   '/research status / report / cancel：研究进度、完整报告、停止研究',
-  '订阅日报北京时间 11:00 发送：每天按指定时区推送',
+  '订阅日报北京时间 11:00 发送：有新完成的美股交易日时推送',
   '取消日报：停止日报',
-  '开启提醒 / 关闭提醒：IB 授权、快照失效与恢复提醒',
+  '开启提醒 / 关闭提醒：账户数据过期与恢复提醒；IBKR / 嘉信登录失效始终自动提醒',
   '日报 / 推送一次：私聊查看上一美股交易日报，含盈亏与行情复盘',
   '偏好 你的要求：保存供模型参考的偏好（最多 1000 字）',
   '查看偏好 / 清除偏好',
