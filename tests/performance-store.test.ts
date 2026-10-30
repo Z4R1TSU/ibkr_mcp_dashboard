@@ -16,6 +16,36 @@ const raw = () => ({ portfolio_measure: 'TWR', accounts: { account: { base_curre
     dates: ['20260925', '20260928'], nav: [1100, 990], cps: [0.1, -0.01] },
 } } } });
 const now = new Date('2026-09-30T06:00:00Z');
+
+test('post-close valuations stay provisional until a later NY date supplies revised history', async () => {
+  const early = new Date('2026-10-13T03:00:00Z'), later = new Date('2026-10-13T11:00:00Z');
+  const input = { portfolio_measure: 'TWR', accounts: { account: { base_currency: 'USD', periods: {
+    YTD: { frequency: 'D', start_date: '20261008', start_nav: 100,
+      dates: ['20261009', '20261012'], nav: [100, 96.42], cps: [0, -0.0358] },
+  } } } };
+  const store = new PerformanceStore();
+  let data = store.ingest(input, early);
+  const state = { snapshot: { fetchedAt: early.toISOString(), account: { nav: 96.42, currency: 'USD' } },
+    status: { connected: true, stale: false } } as DashboardState;
+  const source = new PresenceData(() => state, async () => data, async () => '2026-10-12');
+  await source.refresh(early);
+  assert.equal(source.summary('2026-10-01', early, 100).performance!.provisional, true);
+  assert.match(source.summary('2026-10-01', early, 100).activity!.state, /昨日\(10\/12\) —$/);
+  const revised = structuredClone(input);
+  revised.accounts.account.periods.YTD.nav[1] = 97.18;
+  revised.accounts.account.periods.YTD.cps[1] = -0.0282;
+  revised.accounts.account.periods.YTD.dates.push('20261013');
+  revised.accounts.account.periods.YTD.nav.push(96);
+  revised.accounts.account.periods.YTD.cps.push(-0.04);
+  data = store.ingest(revised, later);
+  state.snapshot!.fetchedAt = later.toISOString();
+  await source.refresh(later);
+  const value = source.summary('2026-10-01', later, 100);
+  assert.equal(value.performance!.date, '2026-10-12');
+  assert.equal(value.performance!.provisional, false);
+  assert.match(value.activity!.state, /昨日\(10\/12\) -3.58%$/);
+  assert.equal(value.performance!.updatedAt, later.toISOString());
+});
 function report(dir: string) {
   fs.mkdirSync(path.join(dir, 'daily-reports'));
   fs.writeFileSync(path.join(dir, 'daily-reports', '2026-09-29.json'), JSON.stringify({ facts: {
@@ -90,4 +120,50 @@ test('valid broker revisions are saved while an account change cannot inherit ol
     assert.throws(() => dailyPerformance(store.ingest(switched, now), '2026-09-29'));
     assert.throws(() => dailyPerformance(store.ingest(switched, now), '2026-09-29'));
   } finally { fs.rmSync(dir, { recursive: true }); }
+});
+
+test('legacy weekend valuations cannot replace Friday returns or break the trading chain', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-weekend-'));
+  const now = new Date('2026-10-12T04:00:00Z');
+  const row = (date: string, previousDate: string, startNav: number, endNav: number, returnPct: number) =>
+    ({ date, previousDate, startNav, endNav, returnPct, fetchedAt: '2026-10-10T03:00:00Z', source: 'ib-pa', provisional: false });
+  const days = [
+    row('2026-10-08', '2026-10-07', 200, 200, 0),
+    row('2026-10-09', '2026-10-08', 200, 220, 10),
+    row('2026-10-10', '2026-10-09', 220, 221, 0.45),
+    row('2026-10-11', '2026-10-09', 220, 222, 0.9),
+    row('2026-10-12', '2026-10-09', 220, 223, 1.36),
+  ];
+  const file = path.join(dir, 'performance-history.json');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, accountId: 'account', currency: 'USD',
+    days: Object.fromEntries(days.map(day => [day.date, day])) }));
+  try {
+    const store = new PerformanceStore(dir);
+    const data = store.view(true, now) as any;
+    assert.equal(data.local_archive.latestDate, '2026-10-09');
+    assert.equal(data.local_archive.records, 2);
+    assert.deepEqual(data.accounts.account.periods.LOCAL.dates, ['2026-10-08', '2026-10-09']);
+    const state = { snapshot: { account: { currency: 'USD', nav: 222 }, fetchedAt: now.toISOString() },
+      status: { connected: true, stale: false } } as DashboardState;
+    for (const offline of [false, true]) {
+      const source = new PresenceData(() => state, async () => data, async () => {
+        if (offline) throw new Error('calendar unavailable');
+        return '2026-10-09';
+      });
+      await source.refresh(now);
+      const summary = source.summary('2026-10-08', now, 100);
+      assert.equal(summary.performance!.date, '2026-10-09');
+      assert.ok(Math.abs(summary.performance!.dailyReturnPct! - 10) < 1e-8);
+      assert.ok(summary.activity!.state.endsWith('昨日(10/09) +10.00%'));
+      assert.equal(summary.total!.returnPct, 122);
+    }
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).days['2026-10-11'].returnPct, 0.9);
+    const monday = { portfolio_measure: 'TWR', accounts: { account: { base_currency: 'USD', periods: {
+      '7D': { frequency: 'D', start_date: '20261008', start_nav: 200,
+        dates: ['20261009', '20261012'], nav: [220, 224.4], cps: [0.1, 0.122] },
+    } } } };
+    const afterClose = store.ingest(monday, new Date('2026-10-12T20:01:00Z')) as any;
+    assert.equal(afterClose.local_archive.latestDate, '2026-10-12');
+    assert.ok(Math.abs(dailyPerformance(afterClose, '2026-10-12').returnPct! - 2) < 1e-8);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

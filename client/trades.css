@@ -1,0 +1,25 @@
+.trades-panel { margin-top: 20px; }
+.trades-panel table { min-width: 780px; }
+.trade-date th { padding: 11px 22px; background: #20291a; color: #c2cdb6; font-size: 11px; border-top: 1px solid var(--line); }
+.trade-date th span { font-size: 9px; font-weight: 400; color: var(--muted); margin-left: 8px; }
+.trade-time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+.trade-name { max-width: 210px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trade-side { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.trade-side.buy { color: var(--positive); }
+.trade-side.sell { color: var(--negative); }
+.trades-warning { margin: 0; padding: 10px 22px; background: #2b261b; color: #d9c79f; font-size: 11px; }
+.trades-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 22px; font-size: 10px; color: var(--muted); }
+.trades-pages { display: flex; align-items: center; gap: 12px; }
+.trades-pages button:disabled { opacity: .35; cursor: default; }
+@media (max-width: 600px) { .trades-footer, .trades-warning { padding-left: 16px; padding-right: 16px; } }
+#trades { scroll-margin-top: 20px; }
+.trades-range-row { padding: 0 22px 16px; }
+.trades-ranges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.trades-ranges button { white-space: nowrap; }
+.trade-type-source { color: #c4bb91 !important; }
+@media (max-width: 600px) {
+  .trades-range-row { padding-left: 16px; padding-right: 16px; }
+  .sidebar { padding-left: 8px; padding-right: 8px; }
+  .sidebar nav, .sidebar-bottom { gap: 4px; }
+  .sidebar .nav-icon { width: 34px; }
+}

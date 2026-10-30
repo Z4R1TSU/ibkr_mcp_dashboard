@@ -1,3 +1,5 @@
+import { isUsEquityTradingDate } from './us-market-calendar.js';
+
 export interface DailyPerformance {
   date: string; previousDate: string; currency: string;
   startNav: number; endNav: number; navChange: number; returnPct: number | null;
@@ -11,6 +13,7 @@ export function newYorkDate(now: Date): { date: string; hour: number } {
   return { date: p.year + '-' + p.month + '-' + p.day, hour: Number(p.hour) };
 }
 export function completedDay(date: string, now: Date): boolean {
+  if (!isUsEquityTradingDate(date)) return false;
   const ny = newYorkDate(now);
   return date < ny.date || (date === ny.date && ny.hour >= 16);
 }

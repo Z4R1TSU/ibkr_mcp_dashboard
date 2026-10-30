@@ -1,0 +1,43 @@
+.cash-flows-panel { margin-top: 20px; scroll-margin-top: 20px; }
+.cash-flow-toggle { width: 100%; padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; text-align: left; }
+.cash-flow-toggle:hover { background: #20271b; }
+.cash-flow-toggle:focus-visible { outline-offset: -3px; }
+.cash-flow-toggle-title { display: flex; align-items: center; gap: 11px; }
+.cash-flow-toggle-title > svg { color: var(--green); }
+.cash-flow-toggle-title b { display: block; font-size: 15px; font-weight: 600; }
+.cash-flow-toggle-title small { display: block; margin-top: 4px; font-size: 10px; color: var(--muted); font-weight: 400; }
+.cash-flow-toggle-action { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.cash-flow-toggle-action svg { transition: transform .15s; }
+.cash-flow-toggle[aria-expanded="true"] .cash-flow-toggle-action svg { transform: rotate(180deg); }
+.cash-flow-content { border-top: 1px solid var(--line); }
+.cash-flow-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding: 20px 24px; border-block: 1px solid var(--line); background: #19211b; }
+.cash-flow-summary > div { min-width: 0; }
+.cash-flow-summary span, .cash-flow-summary small { color: var(--muted); font-size: 10px; }
+.cash-flow-summary strong { display: block; margin: 6px 0; font-size: clamp(17px, 2vw, 25px); font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cash-flow-filters, .cash-flow-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 15px 24px; color: var(--muted); font-size: 10px; }
+.cash-flow-footer > div { display: flex; align-items: center; gap: 10px; }
+.cash-flows-panel table { min-width: 840px; }
+.cash-flows-panel td small { display: block; margin-top: 4px; font-size: 9px; color: var(--muted); }
+.cash-flows-panel time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cash-flow-deposit { color: #a6d8ff; }
+.cash-flow-withdrawal { color: #f3cc8c; }
+.cash-flow-notice { padding: 12px 24px; color: var(--amber); background: #b99b5110; font-size: 11px; }
+.cash-flow-rates { padding: 20px 24px; border-bottom: 1px solid var(--line); }
+.cash-flow-rates h3 { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 12px; font-weight: 500; }
+.cash-flow-rates h3 small, .cash-flow-rates p { color: var(--muted); font-size: 10px; font-weight: 400; }
+.cash-flow-rates p { margin-top: 12px; line-height: 1.8; }
+.cash-flow-rate-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px; margin-top: 14px; }
+.cash-flow-rate { min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; }
+.cash-flow-rate > b { font-size: 11px; font-weight: 500; color: #a6d8ff; }
+.cash-flow-rate dl { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 12px 0 0; }
+.cash-flow-rate dt { color: var(--muted); font-size: 10px; }
+.cash-flow-rate dd { margin: 3px 0 0; font-size: 23px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .cash-flow-toggle { padding: 18px 16px; }
+  .cash-flow-rates { padding: 18px 16px; }
+  .cash-flow-summary { padding: 18px 16px; gap: 12px; grid-template-columns: 1fr 1fr; }
+  .cash-flow-summary > div:last-child { grid-column: 1 / -1; }
+  .cash-flow-filters, .cash-flow-footer, .cash-flow-notice { padding-inline: 16px; }
+  .sidebar nav, .sidebar-bottom { gap: 2px; }
+  .sidebar .nav-icon { width: clamp(22px, 6.5vw, 34px); }
+}
