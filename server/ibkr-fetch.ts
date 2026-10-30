@@ -21,11 +21,21 @@ export function ibkrDispatcher(proxy?: string): Agent | ProxyAgent {
   return new ProxyAgent({ ...options, uri: proxy, proxyTls: tls, requestTls: tls });
 }
 const dispatcher = ibkrDispatcher(process.env.IBKR_HTTP_PROXY);
+// undici reports a non-200 answer to CONNECT as an aborted request. The tunnel
+// never opened, so IB received nothing: as safe to retry as a refused connect.
+// The same code can mark other aborts, so the message must match as well.
+function tunnelRefused(value: { code?: string; message?: unknown }): boolean {
+  return value.code === 'UND_ERR_ABORTED' && typeof value.message === 'string' && /^Proxy response \(\d{3}\) !== 200 when HTTP Tunneling$/.test(value.message);
+}
+function proxyTunnelFailure(error: unknown): boolean {
+  const value = error as { code?: string; message?: unknown; cause?: unknown } | null;
+  return !!value && (tunnelRefused(value) || proxyTunnelFailure(value.cause));
+}
 export function connectionFailure(error: unknown): boolean {
-  const value = error as { code?: string; syscall?: string; errors?: unknown[]; cause?: unknown } | null;
+  const value = error as { code?: string; message?: unknown; syscall?: string; errors?: unknown[]; cause?: unknown } | null;
   if (!value) return false;
   if (Array.isArray(value.errors) && value.errors.length) return value.errors.every(connectionFailure);
-  if (['UND_ERR_CONNECT_TIMEOUT', 'EAI_AGAIN', 'ECONNREFUSED'].includes(value.code ?? '')) return true;
+  if (['UND_ERR_CONNECT_TIMEOUT', 'EAI_AGAIN', 'ECONNREFUSED'].includes(value.code ?? '') || tunnelRefused(value)) return true;
   if (value.syscall === 'connect' && ['ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH'].includes(value.code ?? '')) return true;
   return value.cause ? connectionFailure(value.cause) : false;
 }
@@ -34,6 +44,7 @@ export function readFailureReason(error: unknown): string {
   if (error instanceof IbkrResponseLostError) return 'response_lost';
   if (error instanceof OAuthError) return error.errorCode;
   if (error instanceof StreamableHTTPError && typeof error.code === 'number' && Number.isInteger(error.code) && error.code >= 100 && error.code <= 599) return `http_${error.code}`;
+  if (proxyTunnelFailure(error)) return 'proxy_tunnel_failed';
   if (connectionFailure(error)) return 'connection_failed';
   if (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name)) return 'deadline';
   return 'request_failed';

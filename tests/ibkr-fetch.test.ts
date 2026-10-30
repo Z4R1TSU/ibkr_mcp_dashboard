@@ -205,3 +205,48 @@ test('a token body that never completes is reported as a lost response, not a re
   await assert.rejects(exchangeToken('https://example.com/oauth2/token', { method: 'POST' }));
   assert.equal(calls, 1);
 });
+
+// A local proxy that answers every CONNECT the way the IB egress proxy does on a bad upstream.
+async function refusingProxy(t: { after(fn: () => unknown): void }) {
+  const { createServer } = await import('node:net');
+  const server = createServer(socket => socket.once('data', () => {
+    connects++; socket.end('HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n');
+  }));
+  let connects = 0;
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, connects: () => connects };
+}
+
+test('a proxy that refuses the tunnel never reached IB, so reads and token exchanges retry it', async t => {
+  const logs = t.mock.method(console, 'info', () => {});
+  const proxy = await refusingProxy(t);
+  const previous = process.env.IBKR_TOKEN_HTTP_PROXY;
+  process.env.IBKR_TOKEN_HTTP_PROXY = proxy.url;
+  t.after(() => { if (previous === undefined) delete process.env.IBKR_TOKEN_HTTP_PROXY; else process.env.IBKR_TOKEN_HTTP_PROXY = previous; });
+  // Real undici, so a changed error shape fails here rather than in production.
+  const error = await exchangeToken('https://api.ibkr.com/oauth2/token', { method: 'POST', body: 'private-grant' }).then(() => assert.fail('expected a refused tunnel'), error => error);
+  assert.equal(proxy.connects(), 2);
+  assert.ok(!(error instanceof IbkrResponseLostError));
+  assert.equal(readFailureReason(error), 'proxy_tunnel_failed');
+  const exchange = logs.mock.calls.map(call => JSON.parse(call.arguments[0])).find(log => log.event === 'ibkr_token_exchange');
+  assert.equal(exchange.reason, 'proxy_tunnel_failed');
+  assert.doesNotMatch(JSON.stringify(logs.mock.calls), /private-grant/);
+
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { if (!calls++) throw error; return Response.json({ ok: true }); });
+  assert.equal((await restrictedFetch('https://api.ibkr.com/v1/api/mcp-public')).status, 200);
+  assert.equal(calls, 2);
+});
+
+test('other aborted requests are not mistaken for a refused tunnel', async t => {
+  t.mock.method(console, 'info', () => {});
+  let calls = 0;
+  const aborted = new TypeError('fetch failed', { cause: Object.assign(new Error('Request aborted'), { name: 'AbortError', code: 'UND_ERR_ABORTED' }) });
+  t.mock.method(globalThis, 'fetch', async () => { calls++; throw aborted; });
+  const error = await restrictedFetch('https://api.ibkr.com/v1/api/mcp-public').then(() => assert.fail('expected an abort'), error => error);
+  assert.equal(calls, 1);
+  assert.notEqual(readFailureReason(error), 'proxy_tunnel_failed');
+  await assert.rejects(exchangeToken('https://api.ibkr.com/oauth2/token', { method: 'POST' }), IbkrResponseLostError);
+  assert.equal(calls, 2);
+});
