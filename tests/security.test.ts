@@ -84,7 +84,7 @@ test('HTTP authentication, CSRF, session revocation, and credential isolation', 
     assert.equal(portfolio.status, 200);
     assert.doesNotMatch(await portfolio.text(), /access_token|refresh_token|client_secret|a-long-testing-password/);
     const callback = await fetch(`${base}/auth/ibkr/callback?code=fake&state=fake`, { headers: { Cookie: cookie }, redirect: 'manual' });
-    assert.equal(callback.headers.get('location'), '/?connection=failed');
+    assert.equal(callback.headers.get('location'), '/?connection=invalid-state');
     const logout = await fetch(`${base}/api/logout`, { method: 'POST', headers: { Cookie: cookie, Origin: origin, 'X-CSRF-Token': session.csrf } });
     assert.equal(logout.status, 200);
     assert.equal((await fetch(`${base}/api/portfolio`, { headers: { Cookie: cookie } })).status, 401);
